@@ -17,8 +17,10 @@
   }
   function validateConfig() {
     const invalid = !cfg || cfg.clientId.includes("REPLACE_") || cfg.redirectUri.includes("REPLACE_");
-    $("configMessage").textContent = invalid ? "กรุณาแก้ไข clientId, GitHub username และ redirectUri ใน config.js ก่อนใช้งาน" : "";
-    $("loginButton").disabled = invalid;
+    if (invalid) {
+      $("configMessage").textContent = "กรุณาแก้ไข clientId, GitHub username และ redirectUri ใน config.js ก่อนใช้งาน";
+      $("loginButton").disabled = true;
+    }
     return !invalid;
   }
   async function graphGet(url, token) {
@@ -86,20 +88,29 @@
     finally { show("loading",false); }
   }
   async function login() {
+    if (!msalApp) { $("configMessage").textContent="ระบบยังไม่พร้อมเข้าสู่ระบบ (MSAL ยังไม่ถูกโหลด) กรุณารีเฟรชหน้านี้ หากยังไม่หาย ให้ตรวจสอบว่าเครือข่าย/Proxy บล็อก alcdn.msauth.net หรือไม่"; return; }
     try { const result=await msalApp.loginPopup({scopes:cfg.graphScopes,prompt:"select_account"}); msalApp.setActiveAccount(result.account); show("loginView",false); show("dashboardView",true); await loadData(); }
-    catch(error){ $("configMessage").textContent=error.message || "เข้าสู่ระบบไม่สำเร็จ"; }
+    catch(error){ console.error(error); $("configMessage").textContent=error.message || "เข้าสู่ระบบไม่สำเร็จ"; }
   }
   async function init() {
-    validateConfig();
     if (!validateConfig()) return;
-    msalApp=new msal.PublicClientApplication({auth:{clientId:cfg.clientId,authority:`https://login.microsoftonline.com/${cfg.tenantId}`,redirectUri:cfg.redirectUri,postLogoutRedirectUri:cfg.redirectUri,navigateToLoginRequestUrl:false},cache:{cacheLocation:"sessionStorage"}});
-    await msalApp.initialize();
-    const accounts=msalApp.getAllAccounts();
-    if(accounts.length){msalApp.setActiveAccount(accounts[0]);show("loginView",false);show("dashboardView",true);await loadData();}
+    try {
+      if (typeof msal === "undefined") throw new Error("ไม่สามารถโหลดไลบรารี Microsoft Sign-in (MSAL) ได้ กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต, Proxy/Firewall ขององค์กร หรือ Ad-blocker ที่อาจบล็อก alcdn.msauth.net แล้วรีเฟรชหน้าใหม่");
+      msalApp=new msal.PublicClientApplication({auth:{clientId:cfg.clientId,authority:`https://login.microsoftonline.com/${cfg.tenantId}`,redirectUri:cfg.redirectUri,postLogoutRedirectUri:cfg.redirectUri,navigateToLoginRequestUrl:false},cache:{cacheLocation:"sessionStorage"}});
+      await msalApp.initialize();
+      $("configMessage").textContent="";
+      $("loginButton").disabled=false;
+      const accounts=msalApp.getAllAccounts();
+      if(accounts.length){msalApp.setActiveAccount(accounts[0]);show("loginView",false);show("dashboardView",true);await loadData();}
+    } catch(error) {
+      console.error(error);
+      $("loginButton").disabled=true;
+      $("configMessage").textContent=error.message || "เกิดข้อผิดพลาดระหว่างเริ่มต้นระบบเข้าสู่ระบบ";
+    }
   }
   $("loginButton").addEventListener("click",login);
   $("refreshButton").addEventListener("click",loadData);
-  $("logoutButton").addEventListener("click",()=>msalApp.logoutPopup({mainWindowRedirectUri:cfg.redirectUri}));
+  $("logoutButton").addEventListener("click",()=>{ if(msalApp) msalApp.logoutPopup({mainWindowRedirectUri:cfg.redirectUri}); });
   $("refFilter").addEventListener("change",render);
   window.addEventListener("DOMContentLoaded",init);
 })();
