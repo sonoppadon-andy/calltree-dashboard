@@ -1,1 +1,70 @@
-<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Call Tree Dashboard</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script><style>body{font-family:Arial,sans-serif;background:#f4f6f8;margin:0}.container{padding:20px;max-width:1400px;margin:auto}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:15px}.card{background:#fff;padding:20px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.08)}.num{font-size:32px;font-weight:bold}.panel{background:#fff;padding:20px;margin-top:15px;border-radius:12px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:15px}table{width:100%;border-collapse:collapse}th,td{padding:8px;border-bottom:1px solid #ddd;text-align:left}@media(max-width:768px){.cards,.grid{grid-template-columns:1fr}}</style></head><body><div class="container"><h1>Call Tree Dashboard</h1><p>GitHub Pages Ready</p><div class="cards"><div class="card"><div>Total</div><div class="num" id="total"></div></div><div class="card"><div>Safe</div><div class="num" id="safe"></div></div><div class="card"><div>Pending</div><div class="num" id="pending"></div></div><div class="card"><div>Response %</div><div class="num" id="rate"></div></div></div><div class="grid"><div class="panel"><canvas id="statusChart"></canvas></div><div class="panel"><canvas id="drillChart"></canvas></div></div><div class="panel"><h3>Latest Responses</h3><table><thead><tr><th>Member</th><th>Status</th><th>RefID</th></tr></thead><tbody id="tbl"></tbody></table></div></div><script src="app.js"></script></body></html>
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Call Tree Dashboard connected to SharePoint through Microsoft Graph">
+  <title>Call Tree Dashboard</title>
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="https://alcdn.msauth.net/browser/2.38.4/js/msal-browser.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script defer src="config.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <div id="loginView" class="login-page">
+    <section class="login-card">
+      <div class="brand-mark">CT</div>
+      <p class="eyebrow">BUSINESS CONTINUITY</p>
+      <h1>Call Tree Dashboard</h1>
+      <p>เข้าสู่ระบบด้วยบัญชี Microsoft 365 เพื่ออ่านข้อมูลจาก SharePoint List <strong>Member</strong></p>
+      <button id="loginButton" class="primary">Sign in with Microsoft</button>
+      <p id="configMessage" class="hint"></p>
+    </section>
+  </div>
+
+  <main id="dashboardView" class="app hidden">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">BUSINESS CONTINUITY</p>
+        <h1>Call Tree Dashboard</h1>
+        <p class="subtitle">SharePoint List: Member</p>
+      </div>
+      <div class="toolbar">
+        <label class="sr-only" for="refFilter">กรอง RefID</label>
+        <select id="refFilter"><option value="all">All RefID</option></select>
+        <button id="refreshButton" class="secondary">Refresh</button>
+        <button id="logoutButton" class="outline">Sign out</button>
+      </div>
+    </header>
+
+    <div id="statusMessage" class="status hidden" role="status"></div>
+    <section id="loading" class="loading hidden">กำลังโหลดข้อมูลจาก SharePoint...</section>
+
+    <section id="content" class="hidden">
+      <div class="kpi-grid">
+        <article class="kpi blue"><span>Total Records</span><strong id="kpiTotal">0</strong></article>
+        <article class="kpi green"><span>Safe</span><strong id="kpiSafe">0</strong></article>
+        <article class="kpi purple"><span>Responded</span><strong id="kpiResponded">0</strong></article>
+        <article class="kpi orange"><span>Pending</span><strong id="kpiPending">0</strong></article>
+        <article class="kpi red"><span>Avg. Response</span><strong id="kpiAverage">0 min</strong></article>
+      </div>
+
+      <div class="chart-grid">
+        <article class="panel chart-panel"><h2>Response Status</h2><div class="chart-box"><canvas id="statusChart"></canvas></div></article>
+        <article class="panel chart-panel"><h2>Drill Participation by RefID</h2><div class="chart-box"><canvas id="drillChart"></canvas></div></article>
+      </div>
+
+      <article class="panel">
+        <div class="panel-heading"><h2>Latest Responses</h2><span id="recordSummary"></span></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>ID</th><th>Member</th><th>Email</th><th>Mode</th><th>RefID</th><th>Status</th><th>Response Time</th></tr></thead>
+            <tbody id="responseTable"></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+  </main>
+</body>
+</html>
