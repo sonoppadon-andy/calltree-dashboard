@@ -56,9 +56,17 @@
     select.innerHTML='<option value="all">All RefID</option>' + refs.map(r=>`<option value="${escapeHtml(r)}">${escapeHtml(r)}</option>`).join("");
     if (refs.includes(previous)) select.value=previous;
   }
+  function fillModeFilter(rows) {
+    const select=$("modeFilter"), previous=select.value;
+    const modes=[...new Set(rows.map(r=>clean(r.Mode)).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+    select.innerHTML='<option value="all">All Mode</option>' + modes.map(m=>`<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join("");
+    if (modes.includes(previous)) select.value=previous;
+  }
   function render() {
     const ref=$("refFilter").value;
-    const rows=ref === "all" ? allRows : allRows.filter(r=>clean(r.RefID)===ref);
+    const mode=$("modeFilter").value;
+    let rows=ref === "all" ? allRows : allRows.filter(r=>clean(r.RefID)===ref);
+    if (mode !== "all") rows=rows.filter(r=>clean(r.Mode)===mode);
     const safe=rows.filter(isSafe).length;
     const responded=rows.filter(hasResponse).length;
     const pending=Math.max(rows.length-responded,0);
@@ -79,11 +87,17 @@
     drillChart=new Chart($("drillChart"),{type:"bar",data:{labels:Object.keys(byRef),datasets:[{label:"Total",data:Object.values(byRef).map(x=>x.total),backgroundColor:"#94a3b8"},{label:"Responded",data:Object.values(byRef).map(x=>x.responded),backgroundColor:"#2563eb"},{label:"Safe",data:Object.values(byRef).map(x=>x.safe),backgroundColor:"#16845b"}]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{beginAtZero:true,ticks:{precision:0}}}}});
 
     const latest=[...rows].sort((a,b)=>new Date(b.ClickDateTime||b.Created||0)-new Date(a.ClickDateTime||a.Created||0)).slice(0,20);
-    $("responseTable").innerHTML=latest.map(r=>{const status=clean(r.ResponseSafe)||clean(r.DrillResponse)||"Pending";const cls=isSafe(r)?"safe":hasResponse(r)?"responded":"pending";return `<tr><td>${escapeHtml(r.ID)}</td><td>${escapeHtml(typeof r.Member==='object'?(r.Member.LookupValue||r.Member.email||''):r.Member)||'-'}</td><td>${escapeHtml(r.EMail)||'-'}</td><td>${escapeHtml(r.Mode)||'-'}</td><td>${escapeHtml(r.RefID)||'-'}</td><td><span class="badge ${cls}">${escapeHtml(status)}</span></td><td>${r.ClickDateTime?escapeHtml(new Date(r.ClickDateTime).toLocaleString('th-TH')):'-'}</td></tr>`;}).join("") || '<tr><td colspan="7">ไม่พบข้อมูล</td></tr>';
+    $("responseTable").innerHTML=latest.map(r=>{
+      const status=clean(r.ResponseSafe)||clean(r.DrillResponse)||"Pending";
+      const cls=isSafe(r)?"safe":hasResponse(r)?"responded":"pending";
+      const msg=escapeHtml(r.iMsg);
+      const created=r.Created?escapeHtml(new Date(r.Created).toLocaleString('th-TH')):'-';
+      return `<tr><td>${escapeHtml(r.ID)}</td><td>${escapeHtml(typeof r.Member==='object'?(r.Member.LookupValue||r.Member.email||''):r.Member)||'-'}</td><td>${escapeHtml(r.EMail)||'-'}</td><td>${escapeHtml(r.Mode)||'-'}</td><td>${escapeHtml(r.RefID)||'-'}</td><td class="msg-cell" title="${msg}">${msg||'-'}</td><td><span class="badge ${cls}">${escapeHtml(status)}</span></td><td>${created}</td><td>${r.ClickDateTime?escapeHtml(new Date(r.ClickDateTime).toLocaleString('th-TH')):'-'}</td></tr>`;
+    }).join("") || '<tr><td colspan="9">ไม่พบข้อมูล</td></tr>';
   }
   async function loadData() {
     show("loading",true); show("content",false); setMessage("");
-    try { const token=await acquireToken(); allRows=await readSharePointList(token); fillRefFilter(allRows); render(); show("content",true); }
+    try { const token=await acquireToken(); allRows=await readSharePointList(token); fillRefFilter(allRows); fillModeFilter(allRows); render(); show("content",true); }
     catch(error){ console.error(error); setMessage(error.message || "ไม่สามารถโหลดข้อมูลได้", "error"); }
     finally { show("loading",false); }
   }
@@ -112,5 +126,6 @@
   $("refreshButton").addEventListener("click",loadData);
   $("logoutButton").addEventListener("click",()=>{ if(msalApp) msalApp.logoutPopup({mainWindowRedirectUri:cfg.redirectUri}); });
   $("refFilter").addEventListener("change",render);
+  $("modeFilter").addEventListener("change",render);
   window.addEventListener("DOMContentLoaded",init);
 })();
