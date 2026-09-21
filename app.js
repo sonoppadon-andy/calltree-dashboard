@@ -52,13 +52,28 @@
   }
   function fillRefFilter(rows) {
     const select=$("refFilter"), previous=select.value;
-    const refs=[...new Set(rows.map(r=>clean(r.RefID)).filter(Boolean))].sort((a,b)=>Number(b)-Number(a));
-    select.innerHTML='<option value="all">All RefID</option>' + refs.map(r=>`<option value="${escapeHtml(r)}">${escapeHtml(r)}</option>`).join("");
+    const refMsg=new Map();
+    rows.forEach(r=>{
+      const ref=clean(r.RefID);
+      if (!ref) return;
+      if (!refMsg.has(ref)) refMsg.set(ref, "");
+      const msg=clean(r.iMsg);
+      if (msg && !refMsg.get(ref)) refMsg.set(ref, msg);
+    });
+    const refs=[...refMsg.keys()].sort((a,b)=>Number(b)-Number(a));
+    select.innerHTML='<option value="all">All RefID</option>' + refs.map(r=>{
+      const msg=refMsg.get(r);
+      const label=msg ? (msg.length>60 ? msg.slice(0,60)+"…" : msg) : `RefID ${r} (ไม่มีข้อความ iMsg)`;
+      return `<option value="${escapeHtml(r)}" title="${escapeHtml(msg||r)}">${escapeHtml(label)}</option>`;
+    }).join("");
     if (refs.includes(previous)) select.value=previous;
   }
   function fillModeFilter(rows) {
     const select=$("modeFilter"), previous=select.value;
     const modes=[...new Set(rows.map(r=>clean(r.Mode)).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+    if (!modes.length && rows.length) {
+      console.warn("[CallTree Dashboard] ไม่พบข้อมูลใน field 'Mode' ของ SharePoint List — ชื่อ Internal Field อาจไม่ตรงกับ 'Mode' ที่โค้ดคาดไว้ ตัวอย่างข้อมูลแถวแรกที่ดึงมาได้:", rows[0]);
+    }
     select.innerHTML='<option value="all">All Mode</option>' + modes.map(m=>`<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join("");
     if (modes.includes(previous)) select.value=previous;
   }
