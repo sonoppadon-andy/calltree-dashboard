@@ -115,19 +115,36 @@
       const key=clean(r.RefID)||"Unknown";
       if (!adminCreatedByRef[key]) adminCreatedByRef[key]=new Date(r.Created);
     });
-    const elapsedMinutesOf=r=>{
-      const adminTime=adminCreatedByRef[clean(r.RefID)||"Unknown"];
-      if (!adminTime || !r.Created) return null;
-      const mins=(new Date(r.Created)-adminTime)/60000;
-      return Number.isFinite(mins) && mins>=0 ? mins : null;
-    };
-    const times=rows.map(elapsedMinutesOf).filter(v=>v!==null);
-    const avg=times.length?times.reduce((a,b)=>a+b,0)/times.length:0;
+    // "% ผู้ที่ตอบผิด": compare each RefID's Admin announcement text (iMsg) against each member's
+    // Drill Response. Counted per UNIQUE email — if a person answered more than once, only their
+    // FIRST Drill Response (by earliest Created, among rows that actually have a Drill Response) is
+    // used. A blank Drill Response means the member never answered the drill question, so they are
+    // excluded from both the numerator and denominator (not counted as "wrong").
+    const adminIMsgByRef={};
+    scoped.forEach(r=>{
+      if (!isNotificationRow(r)) return;
+      const key=clean(r.RefID)||"Unknown";
+      if (!(key in adminIMsgByRef)) adminIMsgByRef[key]=fieldText(r.iMsg).trim();
+    });
+    const firstDrillByRefEmail={};
+    rows.forEach(r=>{
+      const drill=fieldText(r.DrillResponse).trim();
+      const email=emailOf(r);
+      if (!drill || !email || !r.Created) return;
+      const key=(clean(r.RefID)||"Unknown")+"|"+email;
+      const t=new Date(r.Created);
+      if (!firstDrillByRefEmail[key] || t<firstDrillByRefEmail[key].time) {
+        firstDrillByRefEmail[key]={time:t, drill, ref:clean(r.RefID)||"Unknown"};
+      }
+    });
+    const drillEntries=Object.values(firstDrillByRefEmail).filter(({ref})=>adminIMsgByRef[ref]!==undefined);
+    const wrongCount=drillEntries.filter(({drill,ref})=>drill!==adminIMsgByRef[ref]).length;
+    const wrongPct=drillEntries.length ? (wrongCount/drillEntries.length*100) : 0;
     $("kpiTotal").textContent=rows.length.toLocaleString("th-TH");
     $("kpiSafe").textContent=safe.toLocaleString("th-TH");
     $("kpiResponded").textContent=responded.toLocaleString("th-TH");
     $("kpiPending").textContent=pending.toLocaleString("th-TH");
-    $("kpiAverage").textContent=`${avg.toFixed(1)} min`;
+    $("kpiAverage").textContent=drillEntries.length ? `${wrongPct.toFixed(1)}%` : "–";
 
     if (ref === "all") {
       $("modeSubtitle").textContent="";
