@@ -5,12 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Call Tree Dashboard connected to SharePoint through Microsoft Graph">
   <title>Call Tree Dashboard</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=20260922c">
   <style>.msg-cell{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:help;}#refFilter{max-width:340px}#modeSubtitle{color:#2563eb;font-weight:600}</style>
   <script defer src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.30.0/lib/msal-browser.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-  <script defer src="config.js"></script>
-  <script defer src="app.js"></script>
+  <script defer src="config.js?v=20260922c"></script>
+  <script defer src="app.js?v=20260922c"></script>
 </head>
 <body>
   <div id="loginView" class="login-page">
@@ -48,13 +48,13 @@
         <article class="kpi blue"><span>Total Records</span><strong id="kpiTotal">0</strong></article>
         <article class="kpi green"><span>Safe</span><strong id="kpiSafe">0</strong></article>
         <article class="kpi purple"><span>พนักงานที่ตอบทั้งหมด</span><strong id="kpiResponded">0</strong></article>
-        <article class="kpi orange"><span>Pending</span><strong id="kpiPending">0</strong></article>
+        <article class="kpi orange hidden"><span>Pending</span><strong id="kpiPending">0</strong></article>
         <article class="kpi red"><span>Avg. Response</span><strong id="kpiAverage">0 min</strong></article>
       </div>
 
       <div class="chart-grid">
         <article class="panel chart-panel"><h2>Response Status</h2><div class="chart-box"><canvas id="statusChart"></canvas></div></article>
-        <article class="panel chart-panel"><h2>Drill Participation by RefID</h2><div class="chart-box"><canvas id="drillChart"></canvas></div></article>
+        <article class="panel chart-panel"><h2>จำนวนผู้ตอบตามช่วงเวลา 15 นาที</h2><div class="chart-box"><canvas id="drillChart"></canvas></div></article>
       </div>
 
       <article class="panel">
