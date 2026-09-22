@@ -125,11 +125,25 @@
       $("modeSubtitle").textContent=`Mode: ${modeVal||'-'} · Created: ${createdVal||'-'} · iMsg: ${msgVal||'-'}`;
     }
 
-    const byRef={}; rows.forEach(r=>{const key=clean(r.RefID)||"Unknown";byRef[key]??={total:0,responded:0,safe:0};byRef[key].total++;if(hasResponse(r))byRef[key].responded++;if(isSafe(r))byRef[key].safe++;});
     if(statusChart) statusChart.destroy();
     statusChart=new Chart($("statusChart"),{type:"doughnut",data:{labels:["Safe","Pending","Need help"],datasets:[{data:[safe,pending,help],backgroundColor:["#16845b","#e9a23b","#d64545"],borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"bottom"}}}});
+
+    // Response-time histogram: bucket each member row by how many minutes elapsed between
+    // its Created (~ when the Admin broadcast reached that member) and its ClickDateTime
+    // (when the member actually responded), grouped into 15-minute buckets from 0.
+    const bucketCounts={};
+    rows.forEach(r=>{
+      if (!r.Created || !r.ClickDateTime) return;
+      const elapsedMin=(new Date(r.ClickDateTime)-new Date(r.Created))/60000;
+      if (!Number.isFinite(elapsedMin) || elapsedMin<0) return;
+      const bucketStart=Math.floor(elapsedMin/15)*15;
+      bucketCounts[bucketStart]=(bucketCounts[bucketStart]||0)+1;
+    });
+    const maxBucket=Object.keys(bucketCounts).length ? Math.max(...Object.keys(bucketCounts).map(Number)) : 0;
+    const bucketLabels=[], bucketData=[];
+    for (let b=0; b<=maxBucket; b+=15) { bucketLabels.push(`${b}–${b+15} นาที`); bucketData.push(bucketCounts[b]||0); }
     if(drillChart) drillChart.destroy();
-    drillChart=new Chart($("drillChart"),{type:"bar",data:{labels:Object.keys(byRef),datasets:[{label:"Total",data:Object.values(byRef).map(x=>x.total),backgroundColor:"#94a3b8"},{label:"Responded",data:Object.values(byRef).map(x=>x.responded),backgroundColor:"#2563eb"},{label:"Safe",data:Object.values(byRef).map(x=>x.safe),backgroundColor:"#16845b"}]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{beginAtZero:true,ticks:{precision:0}}}}});
+    drillChart=new Chart($("drillChart"),{type:"bar",data:{labels:bucketLabels,datasets:[{label:"จำนวนผู้ตอบ",data:bucketData,backgroundColor:"#2563eb",borderRadius:4,maxBarThickness:56}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{title:items=>items[0].label,label:item=>`${item.parsed.y.toLocaleString('th-TH')} คน`}}},scales:{x:{title:{display:true,text:'นาทีหลังจาก Admin แจ้งเหตุ'},grid:{display:false}},y:{beginAtZero:true,ticks:{precision:0},title:{display:true,text:'จำนวนผู้ตอบ (แถว)'}}}}});
 
     $("recordSummary").textContent=`แสดง ${Math.min(rows.length,20)} จาก ${rows.length} รายการ`;
     const latest=[...rows].sort((a,b)=>new Date(b.Created||0)-new Date(a.Created||0)).slice(0,20);
