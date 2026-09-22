@@ -5,6 +5,16 @@
   let allRows = [];
   let statusChart;
   let drillChart;
+  // Cross-linking charts -> table: currentRows/currentBucketRowIds are (re)filled on every
+  // render() and read by the chart click handlers (which only call renderTable(), never the
+  // full render(), so the charts themselves aren't destroyed/rebuilt on every click).
+  let currentRows = [];
+  let currentBucketRowIds = {};
+  let activeFilter = null; // {key, label, predicate(row)=>bool} or null (set by a chart click)
+  // Latest Responses table: per-column text filters, pagination (30 rows/page).
+  const PAGE_SIZE = 30;
+  let currentPage = 1;
+  let columnFilters = {id:"", refid:"", email:"", created:"", status:"", drill:""};
   const $ = id => document.getElementById(id);
   const show = (id, visible=true) => $(id).classList.toggle("hidden", !visible);
   const clean = value => String(value ?? "").trim();
@@ -87,6 +97,12 @@
     if (refs.includes(previous)) select.value=previous;
   }
   function render() {
+    // Scope changed (RefID filter / refresh) — any chart-click table filter, column filters,
+    // and page position from before no longer apply to the new data, so drop them all.
+    activeFilter=null;
+    columnFilters={id:"", refid:"", email:"", created:"", status:"", drill:""};
+    document.querySelectorAll(".col-filter").forEach(input=>{ input.value=""; });
+    currentPage=1;
     const ref=$("refFilter").value;
     const scoped=ref === "all" ? allRows : allRows.filter(r=>clean(r.RefID)===ref);
     // Exclude the Admin announcement row (has Mode/iMsg) from every metric and the table — only member responses stay.
@@ -159,8 +175,26 @@
       $("modeSubtitle").textContent=`Mode: ${modeVal||'-'} · Created: ${createdVal||'-'} · iMsg: ${msgVal||'-'}`;
     }
 
+    // Row-level predicates for each doughnut slice, reused by its click handler so the table
+    // filter shows exactly the rows that make up that slice. "Safe"/"Pending" mirror the
+    // definitions of the `safe`/`pending` numbers above; "Need help" mirrors `help` above
+    // (which is already row-based, so clicking it filters to exactly `help` rows).
+    const statusPredicates={
+      safe: isSafe,
+      pending: r=>!hasResponse(r),
+      help: r=>Boolean(clean(r.HelpNote) || clean(r.ResponseSafe).toLowerCase()==="seehelpnote"),
+    };
+    const statusLabels={safe:"Safe", pending:"Pending", help:"Need help"};
     if(statusChart) statusChart.destroy();
-    statusChart=new Chart($("statusChart"),{type:"doughnut",data:{labels:["Safe","Pending","Need help"],datasets:[{data:[safe,pending,help],backgroundColor:["#16845b","#e9a23b","#d64545"],borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"bottom"}}}});
+    statusChart=new Chart($("statusChart"),{type:"doughnut",data:{labels:["Safe","Pending","Need help"],datasets:[{data:[safe,pending,help],backgroundColor:["#16845b","#e9a23b","#d64545"],borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"bottom"}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
+      if (!elements.length) return;
+      const kinds=["safe","pending","help"];
+      const kind=kinds[elements[0].index];
+      const key=`status:${kind}`;
+      activeFilter=(activeFilter && activeFilter.key===key) ? null : {key, label:statusLabels[kind], predicate:statusPredicates[kind]};
+      currentPage=1;
+      renderTable();
+    }}});
 
     // Response-time histogram: count UNIQUE emails, not rows. A member with multiple response
     // rows for the same RefID is counted once, using the EARLIEST of their own Created times as
@@ -173,32 +207,138 @@
       if (!email || !r.Created) return;
       const t=new Date(r.Created);
       if (!earliestByRefEmail[key] || t<earliestByRefEmail[key].time) {
-        earliestByRefEmail[key]={time:t, ref:clean(r.RefID)||"Unknown"};
+        earliestByRefEmail[key]={time:t, ref:clean(r.RefID)||"Unknown", row:r};
       }
     });
     const bucketCounts={};
-    Object.values(earliestByRefEmail).forEach(({time,ref})=>{
+    const bucketRowIds={};
+    Object.values(earliestByRefEmail).forEach(({time,ref,row})=>{
       const adminTime=adminCreatedByRef[ref];
       if (!adminTime) return;
       const mins=(time-adminTime)/60000;
       if (!Number.isFinite(mins) || mins<0) return;
       const bucketStart=Math.floor(mins/15)*15;
       bucketCounts[bucketStart]=(bucketCounts[bucketStart]||0)+1;
+      (bucketRowIds[bucketStart] ??= []).push(row.ID);
     });
+    currentBucketRowIds=bucketRowIds;
     const maxBucket=Object.keys(bucketCounts).length ? Math.max(...Object.keys(bucketCounts).map(Number)) : 0;
     const bucketLabels=[], bucketData=[];
     for (let b=0; b<=maxBucket; b+=15) { bucketLabels.push(`${b}–${b+15} นาที`); bucketData.push(bucketCounts[b]||0); }
     if(drillChart) drillChart.destroy();
-    drillChart=new Chart($("drillChart"),{type:"bar",data:{labels:bucketLabels,datasets:[{label:"จำนวนผู้ตอบ",data:bucketData,backgroundColor:"#2563eb",borderRadius:4,maxBarThickness:56}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{title:items=>items[0].label,label:item=>`${item.parsed.y.toLocaleString('th-TH')} คน`}}},scales:{x:{title:{display:true,text:'นาทีหลังจาก Admin แจ้งเหตุ'},grid:{display:false}},y:{beginAtZero:true,ticks:{precision:0},title:{display:true,text:'จำนวนผู้ตอบ (คนไม่ซ้ำ)'}}}}});
+    drillChart=new Chart($("drillChart"),{type:"bar",data:{labels:bucketLabels,datasets:[{label:"จำนวนผู้ตอบ",data:bucketData,backgroundColor:"#2563eb",borderRadius:4,maxBarThickness:56}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{title:items=>items[0].label,label:item=>`${item.parsed.y.toLocaleString('th-TH')} คน`}}},scales:{x:{title:{display:true,text:'นาทีหลังจาก Admin แจ้งเหตุ'},grid:{display:false}},y:{beginAtZero:true,ticks:{precision:0},title:{display:true,text:'จำนวนผู้ตอบ (คนไม่ซ้ำ)'}}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
+      if (!elements.length) return;
+      const bucketStart=elements[0].index*15;
+      const key=`bucket:${bucketStart}`;
+      if (activeFilter && activeFilter.key===key) { activeFilter=null; }
+      else {
+        const ids=new Set(currentBucketRowIds[bucketStart]||[]);
+        activeFilter={key, label:`ตอบภายใน ${bucketStart}–${bucketStart+15} นาที`, predicate:r=>ids.has(r.ID)};
+      }
+      currentPage=1;
+      renderTable();
+    }}});
 
-    $("recordSummary").textContent=`แสดง ${Math.min(rows.length,20)} จาก ${rows.length} รายการ`;
-    const latest=[...rows].sort((a,b)=>new Date(b.Created||0)-new Date(a.Created||0)).slice(0,20);
-    $("responseTable").innerHTML=latest.map(r=>{
+    currentRows=rows;
+    renderTable();
+  }
+  // Text shown/matched for a row in a given Latest Responses column — shared by the per-column
+  // filter inputs and by CSV/Excel export, so "what you filtered on" and "what you exported"
+  // always agree.
+  function rowColumnText(r, col) {
+    switch (col) {
+      case "id": return String(r.ID ?? "");
+      case "refid": return clean(r.RefID);
+      case "email": return clean(r.EMail);
+      case "created": return r.Created ? new Date(r.Created).toLocaleString("th-TH") : "";
+      case "status": return [clean(r.ResponseSafe), clean(r.HelpNote)].filter(Boolean).join(" · ");
+      case "drill": return clean(r.DrillResponse);
+      default: return "";
+    }
+  }
+  // currentRows -> chart click filter (activeFilter) -> per-column text filters (columnFilters)
+  // -> sorted newest-first. This is the full matching set (every page), used both to slice out
+  // the current page for display and, unsliced, for CSV/Excel export.
+  function getFilteredRows() {
+    let list = activeFilter ? currentRows.filter(activeFilter.predicate) : currentRows;
+    Object.entries(columnFilters).forEach(([col, needle]) => {
+      if (!needle) return;
+      list = list.filter(r => rowColumnText(r, col).toLowerCase().includes(needle));
+    });
+    return [...list].sort((a,b)=>new Date(b.Created||0)-new Date(a.Created||0));
+  }
+  // Renders the Latest Responses table: applies activeFilter (set by clicking a slice of the
+  // Response Status chart or a bar of the 15-minute histogram) and the per-column text filters,
+  // then shows the current page (30 rows max — see PAGE_SIZE). Called on its own by chart click
+  // handlers and column-filter/pagination controls so none of those ever destroy/rebuild the
+  // charts themselves — only render() (RefID change / Refresh) does that.
+  function renderTable() {
+    const sorted=getFilteredRows();
+    const total=sorted.length;
+    const totalPages=Math.max(1, Math.ceil(total/PAGE_SIZE));
+    if (currentPage>totalPages) currentPage=totalPages;
+    if (currentPage<1) currentPage=1;
+    const startIdx=(currentPage-1)*PAGE_SIZE;
+    const pageRows=sorted.slice(startIdx, startIdx+PAGE_SIZE);
+
+    const filterNote=activeFilter
+      ? ` — กรองตามกราฟ: <strong>${escapeHtml(activeFilter.label)}</strong> <a href="#" id="clearTableFilter" style="color:#2563eb;text-decoration:underline;">(ล้างตัวกรอง)</a>`
+      : "";
+    const rangeText=total ? `${startIdx+1}–${Math.min(startIdx+PAGE_SIZE,total)}` : "0";
+    $("recordSummary").innerHTML=`แสดง ${rangeText} จาก ${total} รายการ${filterNote}`;
+    const clearLink=$("clearTableFilter");
+    if (clearLink) clearLink.addEventListener("click", e=>{ e.preventDefault(); activeFilter=null; currentPage=1; renderTable(); });
+
+    $("responseTable").innerHTML=pageRows.map(r=>{
       const cls=isSafe(r)?"safe":(clean(r.ResponseSafe)||clean(r.HelpNote))?"responded":"pending";
       const safeNote=[clean(r.ResponseSafe),clean(r.HelpNote)].filter(Boolean).join(" · ")||'-';
       const created=r.Created?escapeHtml(new Date(r.Created).toLocaleString('th-TH')):'-';
       return `<tr><td>${escapeHtml(r.ID)}</td><td>${escapeHtml(r.RefID)||'-'}</td><td>${escapeHtml(r.EMail)||'-'}</td><td>${created}</td><td><span class="badge ${cls}">${escapeHtml(safeNote)}</span></td><td>${escapeHtml(r.DrillResponse)||'-'}</td></tr>`;
-    }).join("") || '<tr><td colspan="6">ไม่พบข้อมูล</td></tr>';
+    }).join("") || `<tr><td colspan="6">${(activeFilter||Object.values(columnFilters).some(Boolean))?'ไม่พบข้อมูลที่ตรงกับตัวกรอง':'ไม่พบข้อมูล'}</td></tr>`;
+
+    $("pageIndicator").textContent=`หน้า ${currentPage} / ${totalPages}`;
+    $("prevPageButton").disabled=currentPage<=1;
+    $("nextPageButton").disabled=currentPage>=totalPages;
+    show("clearColumnFiltersButton", Object.values(columnFilters).some(Boolean));
+  }
+  function exportTimestamp() {
+    const d=new Date(), p=n=>String(n).padStart(2,"0");
+    return `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+  }
+  function downloadBlob(blob, filename) {
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url; a.download=filename; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url), 1000);
+  }
+  // Export the FULL current match set (activeFilter + column filters applied, all pages) —
+  // not just the 30 rows currently visible on screen.
+  function exportCsv() {
+    const rows=getFilteredRows();
+    if (!rows.length) { setMessage("ไม่มีข้อมูลให้ Export ตามตัวกรองปัจจุบัน", "error"); return; }
+    const csvEscape=v=>{ const s=String(v ?? ""); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
+    const headers=["ID","RefID","Email","Created","ResponseSafe","HelpNote","DrillResponse"];
+    const lines=[headers.join(",")];
+    rows.forEach(r=>{
+      lines.push([r.ID, clean(r.RefID), clean(r.EMail), r.Created?new Date(r.Created).toLocaleString("th-TH"):"", clean(r.ResponseSafe), clean(r.HelpNote), clean(r.DrillResponse)].map(csvEscape).join(","));
+    });
+    // Leading BOM so Excel opens the Thai text as UTF-8 instead of mangling it.
+    const blob=new Blob(["﻿"+lines.join("\r\n")], {type:"text/csv;charset=utf-8;"});
+    downloadBlob(blob, `call-tree-responses-${exportTimestamp()}.csv`);
+  }
+  function exportExcel() {
+    if (typeof XLSX === "undefined") { setMessage("ไม่สามารถโหลดไลบรารี Export Excel ได้ กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ตแล้วลองใหม่", "error"); return; }
+    const rows=getFilteredRows();
+    if (!rows.length) { setMessage("ไม่มีข้อมูลให้ Export ตามตัวกรองปัจจุบัน", "error"); return; }
+    const data=rows.map(r=>({
+      ID:r.ID, RefID:clean(r.RefID), Email:clean(r.EMail),
+      Created:r.Created?new Date(r.Created).toLocaleString("th-TH"):"",
+      ResponseSafe:clean(r.ResponseSafe), HelpNote:clean(r.HelpNote), DrillResponse:clean(r.DrillResponse),
+    }));
+    const ws=XLSX.utils.json_to_sheet(data);
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Responses");
+    XLSX.writeFile(wb, `call-tree-responses-${exportTimestamp()}.xlsx`);
   }
   async function loadData() {
     show("loading",true); show("content",false); setMessage("");
@@ -231,5 +371,22 @@
   $("refreshButton").addEventListener("click",loadData);
   $("logoutButton").addEventListener("click",()=>{ if(msalApp) msalApp.logoutPopup({mainWindowRedirectUri:cfg.redirectUri}); });
   $("refFilter").addEventListener("change",render);
+  document.querySelectorAll(".col-filter").forEach(input=>{
+    input.addEventListener("input", ()=>{
+      columnFilters[input.dataset.col]=input.value.trim().toLowerCase();
+      currentPage=1;
+      renderTable();
+    });
+  });
+  $("clearColumnFiltersButton").addEventListener("click", ()=>{
+    document.querySelectorAll(".col-filter").forEach(input=>{ input.value=""; });
+    Object.keys(columnFilters).forEach(k=>{ columnFilters[k]=""; });
+    currentPage=1;
+    renderTable();
+  });
+  $("prevPageButton").addEventListener("click", ()=>{ currentPage=Math.max(1,currentPage-1); renderTable(); });
+  $("nextPageButton").addEventListener("click", ()=>{ currentPage=currentPage+1; renderTable(); });
+  $("exportCsvButton").addEventListener("click", exportCsv);
+  $("exportExcelButton").addEventListener("click", exportExcel);
   window.addEventListener("DOMContentLoaded",init);
 })();
