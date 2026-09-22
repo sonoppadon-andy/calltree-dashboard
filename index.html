@@ -6,7 +6,7 @@
   <meta name="description" content="Call Tree Dashboard connected to SharePoint through Microsoft Graph">
   <title>Call Tree Dashboard</title>
   <link rel="stylesheet" href="styles.css">
-  <style>.msg-cell{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:help;}</style>
+  <style>.msg-cell{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:help;}.detail-cell{white-space:nowrap;color:#475569;font-size:12.5px;}#refFilter{max-width:340px}</style>
   <script defer src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.30.0/lib/msal-browser.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script defer src="config.js"></script>
@@ -32,8 +32,6 @@
         <p class="subtitle">SharePoint List: Member</p>
       </div>
       <div class="toolbar">
-        <label class="sr-only" for="modeFilter">กรอง Mode</label>
-        <select id="modeFilter"><option value="all">All Mode</option></select>
         <label class="sr-only" for="refFilter">กรอง RefID</label>
         <select id="refFilter"><option value="all">All RefID</option></select>
         <button id="refreshButton" class="secondary">Refresh</button>
@@ -62,7 +60,7 @@
         <div class="panel-heading"><h2>Latest Responses</h2><span id="recordSummary"></span></div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>ID</th><th>Member</th><th>Email</th><th>Mode</th><th>RefID</th><th>iMsg</th><th>Status</th><th>Created</th><th>Response Time</th></tr></thead>
+            <thead><tr><th>ID</th><th>Member</th><th>Email</th><th>RefID</th><th>Detail</th><th>Status</th><th>Response Time</th></tr></thead>
             <tbody id="responseTable"></tbody>
           </table>
         </div>
