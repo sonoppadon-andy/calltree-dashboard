@@ -95,8 +95,13 @@
     if (scoped.length && rows.length===scoped.length) {
       console.warn("[CallTree Dashboard] ไม่มีแถวใดถูกตัดออกเลย — ถ้าคาดว่าควรมีรายการแจ้งเหตุการณ์ถูกกรองออก ให้ตรวจสอบค่าจริงของ Mode/iMsg ในแถวตัวอย่างนี้:", scoped[0]);
     }
-    const safe=rows.filter(isSafe).length;
-    const responded=rows.filter(hasResponse).length;
+    // Safe / Responded now count unique employees (by email), not raw rows — one member can
+    // appear on multiple rows for the same RefID (re-submits, drill + safe-check, etc.).
+    const emailOf=r=>clean(r.EMail).toLowerCase();
+    const safeEmails=new Set(rows.filter(isSafe).map(emailOf).filter(Boolean));
+    const respondedEmails=new Set(rows.filter(hasResponse).map(emailOf).filter(Boolean));
+    const safe=safeEmails.size;
+    const responded=respondedEmails.size;
     const pending=Math.max(rows.length-responded,0);
     const help=rows.filter(r=>clean(r.HelpNote) || clean(r.ResponseSafe).toLowerCase()==="seehelpnote").length;
     const times=rows.filter(r=>r.Created&&r.ClickDateTime).map(r=>(new Date(r.ClickDateTime)-new Date(r.Created))/60000).filter(v=>Number.isFinite(v)&&v>=0);
