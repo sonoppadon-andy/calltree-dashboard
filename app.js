@@ -53,12 +53,16 @@
     const lists = await graphGet(`/sites/${site.id}/lists?$select=id,displayName`, token);
     const list = (lists.value || []).find(x => x.displayName === cfg.listName);
     if (!list) throw new Error(`ไม่พบ SharePoint List ชื่อ ${cfg.listName}`);
-    const fields = "Mode,Member,EMail,ClickDateTime,Created,iMsg,ResponseSafe,HelpNote,RefID,DrillChoice,DrillResponse";
+    // NOTE: the SharePoint column shown to users as "Mode" has internal (API) field name "Team" —
+    // its Display Name was changed after the column was created, and SharePoint never updates the
+    // internal name to match. Confirmed via /_layouts/15/FldEdit.aspx?...&Field=Team for that column.
+    const fields = "Team,Member,EMail,ClickDateTime,Created,iMsg,ResponseSafe,HelpNote,RefID,DrillChoice,DrillResponse";
     let next = `/sites/${site.id}/lists/${list.id}/items?$expand=fields($select=${fields})&$select=id,fields&$top=999`;
     const rows=[];
     while (next) {
       const page=await graphGet(next, token);
-      rows.push(...(page.value || []).map(item => ({ID:item.id, ...item.fields})));
+      // Map Team -> Mode so the rest of the app can keep using row.Mode as before.
+      rows.push(...(page.value || []).map(item => ({ID:item.id, ...item.fields, Mode:item.fields.Team})));
       next=page["@odata.nextLink"] || null;
     }
     return rows;
@@ -110,6 +114,9 @@
       const modeVal=fieldText(info.Mode);
       const createdVal=info.Created ? new Date(info.Created).toLocaleString('th-TH') : "";
       const msgVal=fieldText(info.iMsg);
+      if (!modeVal && info.ID) {
+        console.warn(`[CallTree Dashboard] RefID=${ref}: อ่านค่า Mode จาก field "Mode" ไม่ได้ (ได้ค่าว่าง) ทั้งที่ควรมีข้อมูล — นี่คือ raw object ทั้งหมดที่ Graph API ส่งกลับมาสำหรับแถวประกาศ Admin (ID ${info.ID}) ลองหาว่าค่า "Drill" ที่คาดไว้อยู่ภายใต้ property ชื่ออะไรจริง ๆ:`, info);
+      }
       $("modeSubtitle").textContent=`Mode: ${modeVal||'-'} · Created: ${createdVal||'-'} · iMsg: ${msgVal||'-'}`;
     }
 
