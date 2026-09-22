@@ -83,7 +83,13 @@
     $("kpiResponded").textContent=responded.toLocaleString("th-TH");
     $("kpiPending").textContent=pending.toLocaleString("th-TH");
     $("kpiAverage").textContent=`${avg.toFixed(1)} min`;
-    $("recordSummary").textContent=`แสดง ${Math.min(rows.length,20)} จาก ${rows.length} รายการ`;
+
+    if (ref === "all") {
+      $("modeSubtitle").textContent="";
+    } else {
+      const modeVal=clean((rows.find(r=>clean(r.Mode)) || {}).Mode);
+      $("modeSubtitle").textContent=modeVal ? `Mode: ${modeVal}` : "Mode: -";
+    }
 
     const byRef={}; rows.forEach(r=>{const key=clean(r.RefID)||"Unknown";byRef[key]??={total:0,responded:0,safe:0};byRef[key].total++;if(hasResponse(r))byRef[key].responded++;if(isSafe(r))byRef[key].safe++;});
     if(statusChart) statusChart.destroy();
@@ -91,14 +97,15 @@
     if(drillChart) drillChart.destroy();
     drillChart=new Chart($("drillChart"),{type:"bar",data:{labels:Object.keys(byRef),datasets:[{label:"Total",data:Object.values(byRef).map(x=>x.total),backgroundColor:"#94a3b8"},{label:"Responded",data:Object.values(byRef).map(x=>x.responded),backgroundColor:"#2563eb"},{label:"Safe",data:Object.values(byRef).map(x=>x.safe),backgroundColor:"#16845b"}]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{beginAtZero:true,ticks:{precision:0}}}}});
 
-    const latest=[...rows].sort((a,b)=>new Date(b.ClickDateTime||b.Created||0)-new Date(a.ClickDateTime||a.Created||0)).slice(0,20);
+    const responseRows=rows.filter(r=>clean(r.Mode) || clean(r.iMsg));
+    $("recordSummary").textContent=`แสดง ${Math.min(responseRows.length,20)} จาก ${responseRows.length} รายการ`;
+    const latest=[...responseRows].sort((a,b)=>new Date(b.Created||0)-new Date(a.Created||0)).slice(0,20);
     $("responseTable").innerHTML=latest.map(r=>{
-      const status=clean(r.ResponseSafe)||clean(r.DrillResponse)||"Pending";
-      const cls=isSafe(r)?"safe":hasResponse(r)?"responded":"pending";
-      const created=r.Created?new Date(r.Created).toLocaleString('th-TH'):'-';
-      const detail=`Mode: ${clean(r.Mode)||'-'} · Created: ${created}`;
-      return `<tr><td>${escapeHtml(r.ID)}</td><td>${escapeHtml(typeof r.Member==='object'?(r.Member.LookupValue||r.Member.email||''):r.Member)||'-'}</td><td>${escapeHtml(r.EMail)||'-'}</td><td>${escapeHtml(r.RefID)||'-'}</td><td class="detail-cell">${escapeHtml(detail)}</td><td><span class="badge ${cls}">${escapeHtml(status)}</span></td><td>${r.ClickDateTime?escapeHtml(new Date(r.ClickDateTime).toLocaleString('th-TH')):'-'}</td></tr>`;
-    }).join("") || '<tr><td colspan="7">ไม่พบข้อมูล</td></tr>';
+      const cls=isSafe(r)?"safe":(clean(r.ResponseSafe)||clean(r.HelpNote))?"responded":"pending";
+      const safeNote=[clean(r.ResponseSafe),clean(r.HelpNote)].filter(Boolean).join(" · ")||'-';
+      const created=r.Created?escapeHtml(new Date(r.Created).toLocaleString('th-TH')):'-';
+      return `<tr><td>${escapeHtml(r.ID)}</td><td>${escapeHtml(r.RefID)||'-'}</td><td>${escapeHtml(r.EMail)||'-'}</td><td>${created}</td><td><span class="badge ${cls}">${escapeHtml(safeNote)}</span></td><td>${escapeHtml(r.DrillResponse)||'-'}</td></tr>`;
+    }).join("") || '<tr><td colspan="6">ไม่พบข้อมูล</td></tr>';
   }
   async function loadData() {
     show("loading",true); show("content",false); setMessage("");
