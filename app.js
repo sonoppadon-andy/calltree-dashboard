@@ -109,7 +109,8 @@
       const info=scoped.find(isNotificationRow) || {};
       const modeVal=fieldText(info.Mode);
       const createdVal=info.Created ? new Date(info.Created).toLocaleString('th-TH') : "";
-      $("modeSubtitle").textContent=`Mode: ${modeVal||'-'} · Created: ${createdVal||'-'}`;
+      const msgVal=fieldText(info.iMsg);
+      $("modeSubtitle").textContent=`Mode: ${modeVal||'-'} · Created: ${createdVal||'-'} · iMsg: ${msgVal||'-'}`;
     }
 
     const byRef={}; rows.forEach(r=>{const key=clean(r.RefID)||"Unknown";byRef[key]??={total:0,responded:0,safe:0};byRef[key].total++;if(hasResponse(r))byRef[key].responded++;if(isSafe(r))byRef[key].safe++;});
