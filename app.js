@@ -115,7 +115,17 @@
     // appear on multiple rows for the same RefID (re-submits, drill + safe-check, etc.).
     const emailOf=r=>clean(r.EMail).toLowerCase();
     const safeEmails=new Set(rows.filter(isSafe).map(emailOf).filter(Boolean));
-    const respondedEmails=new Set(rows.filter(hasResponse).map(emailOf).filter(Boolean));
+    // "Responded" = every unique email with at least one member row — NOT filtered through
+    // hasResponse() (ClickDateTime/ResponseSafe/DrillResponse). Bug fixed 2026-09-22: for some
+    // Modes (e.g. "ActivateCallTree", confirmed via RefID 645 screenshot: 4 rows / 3 unique
+    // emails, all with ResponseSafe and DrillResponse blank) those three fields are legitimately
+    // blank on every member row for that Mode, so hasResponse() was always false and Responded
+    // showed 0 even though the rows themselves ARE the responses. `rows` already excludes the
+    // Admin/notification row (see isNotificationRow above), so anything left in it with an EMail
+    // is by construction a real member response — same "the row's existence is the signal"
+    // reasoning already used for the 15-minute histogram (which is why the histogram was already
+    // showing the correct count of 3 for RefID 645 while this KPI wrongly showed 0).
+    const respondedEmails=new Set(rows.map(emailOf).filter(Boolean));
     const safe=safeEmails.size;
     const responded=respondedEmails.size;
     const pending=Math.max(rows.length-responded,0);
