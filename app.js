@@ -104,7 +104,24 @@
     const responded=respondedEmails.size;
     const pending=Math.max(rows.length-responded,0);
     const help=rows.filter(r=>clean(r.HelpNote) || clean(r.ResponseSafe).toLowerCase()==="seehelpnote").length;
-    const times=rows.filter(r=>r.Created&&r.ClickDateTime).map(r=>(new Date(r.ClickDateTime)-new Date(r.Created))/60000).filter(v=>Number.isFinite(v)&&v>=0);
+    // Reference time for "how long did this member take to respond" is the Admin/notification
+    // row's own Created (the moment the event was announced) for that RefID — NOT each member
+    // row's ClickDateTime, which is unreliable/blank in this list. Each member response row's own
+    // Created is when THAT member's response was recorded (see Latest Responses table's "Created"
+    // column), so elapsed = memberRow.Created − adminRow.Created for the same RefID.
+    const adminCreatedByRef={};
+    scoped.forEach(r=>{
+      if (!isNotificationRow(r) || !r.Created) return;
+      const key=clean(r.RefID)||"Unknown";
+      if (!adminCreatedByRef[key]) adminCreatedByRef[key]=new Date(r.Created);
+    });
+    const elapsedMinutesOf=r=>{
+      const adminTime=adminCreatedByRef[clean(r.RefID)||"Unknown"];
+      if (!adminTime || !r.Created) return null;
+      const mins=(new Date(r.Created)-adminTime)/60000;
+      return Number.isFinite(mins) && mins>=0 ? mins : null;
+    };
+    const times=rows.map(elapsedMinutesOf).filter(v=>v!==null);
     const avg=times.length?times.reduce((a,b)=>a+b,0)/times.length:0;
     $("kpiTotal").textContent=rows.length.toLocaleString("th-TH");
     $("kpiSafe").textContent=safe.toLocaleString("th-TH");
@@ -128,14 +145,12 @@
     if(statusChart) statusChart.destroy();
     statusChart=new Chart($("statusChart"),{type:"doughnut",data:{labels:["Safe","Pending","Need help"],datasets:[{data:[safe,pending,help],backgroundColor:["#16845b","#e9a23b","#d64545"],borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"bottom"}}}});
 
-    // Response-time histogram: bucket each member row by how many minutes elapsed between
-    // its Created (~ when the Admin broadcast reached that member) and its ClickDateTime
-    // (when the member actually responded), grouped into 15-minute buckets from 0.
+    // Response-time histogram: bucket each member row by elapsedMinutesOf() (Admin row's Created
+    // for that RefID -> member row's own Created), grouped into 15-minute buckets from 0.
     const bucketCounts={};
     rows.forEach(r=>{
-      if (!r.Created || !r.ClickDateTime) return;
-      const elapsedMin=(new Date(r.ClickDateTime)-new Date(r.Created))/60000;
-      if (!Number.isFinite(elapsedMin) || elapsedMin<0) return;
+      const elapsedMin=elapsedMinutesOf(r);
+      if (elapsedMin===null) return;
       const bucketStart=Math.floor(elapsedMin/15)*15;
       bucketCounts[bucketStart]=(bucketCounts[bucketStart]||0)+1;
     });
