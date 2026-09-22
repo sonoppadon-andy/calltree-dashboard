@@ -5,12 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Call Tree Dashboard connected to SharePoint through Microsoft Graph">
   <title>Call Tree Dashboard</title>
-  <link rel="stylesheet" href="styles.css?v=20260922f">
+  <link rel="stylesheet" href="styles.css?v=20260922h">
   <style>.msg-cell{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:help;}#refFilter{max-width:340px}#modeSubtitle{color:#2563eb;font-weight:600}</style>
   <script defer src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.30.0/lib/msal-browser.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-  <script defer src="config.js?v=20260922f"></script>
-  <script defer src="app.js?v=20260922f"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script defer src="config.js?v=20260922h"></script>
+  <script defer src="app.js?v=20260922h"></script>
 </head>
 <body>
   <div id="loginView" class="login-page">
@@ -58,12 +59,35 @@
       </div>
 
       <article class="panel">
-        <div class="panel-heading"><h2>Latest Responses</h2><span id="recordSummary"></span></div>
+        <div class="panel-heading">
+          <h2>Latest Responses</h2>
+          <div class="panel-heading-right">
+            <span id="recordSummary"></span>
+            <button id="clearColumnFiltersButton" class="outline small hidden">ล้างตัวกรองคอลัมน์</button>
+            <button id="exportCsvButton" class="secondary small">Export CSV</button>
+            <button id="exportExcelButton" class="secondary small">Export Excel</button>
+          </div>
+        </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>ID</th><th>RefID</th><th>Email</th><th>Created</th><th>ResponseSafe / HelpNote</th><th>Drill Response</th></tr></thead>
+            <thead>
+              <tr><th>ID</th><th>RefID</th><th>Email</th><th>Created</th><th>ResponseSafe / HelpNote</th><th>Drill Response</th></tr>
+              <tr class="filter-row">
+                <th><input type="text" class="col-filter" data-col="id" placeholder="กรอง ID"></th>
+                <th><input type="text" class="col-filter" data-col="refid" placeholder="กรอง RefID"></th>
+                <th><input type="text" class="col-filter" data-col="email" placeholder="กรอง Email"></th>
+                <th><input type="text" class="col-filter" data-col="created" placeholder="กรอง Created"></th>
+                <th><input type="text" class="col-filter" data-col="status" placeholder="กรอง Response/HelpNote"></th>
+                <th><input type="text" class="col-filter" data-col="drill" placeholder="กรอง Drill Response"></th>
+              </tr>
+            </thead>
             <tbody id="responseTable"></tbody>
           </table>
+        </div>
+        <div class="table-pagination">
+          <button id="prevPageButton" class="outline small">← ก่อนหน้า</button>
+          <span id="pageIndicator"></span>
+          <button id="nextPageButton" class="outline small">ถัดไป →</button>
         </div>
       </article>
     </section>
