@@ -21,7 +21,9 @@
     }
     return clean(value);
   }
-  const isNotificationRow = row => !fieldText(row.Mode) && !fieldText(row.iMsg);
+  // The Admin broadcast/announcement row carries the Mode + iMsg text for the whole RefID batch;
+  // individual member response rows do not have Mode/iMsg populated. So "has Mode or iMsg" = notification row.
+  const isNotificationRow = row => Boolean(fieldText(row.Mode) || fieldText(row.iMsg));
 
   function setMessage(message, kind="info") {
     const el=$("statusMessage"); el.textContent=message; el.className=`status ${kind}`; show("statusMessage", Boolean(message));
@@ -83,9 +85,9 @@
   function render() {
     const ref=$("refFilter").value;
     const scoped=ref === "all" ? allRows : allRows.filter(r=>clean(r.RefID)===ref);
-    // Exclude "event notification" rows (both Mode and iMsg blank) from every metric and the table.
+    // Exclude the Admin announcement row (has Mode/iMsg) from every metric and the table — only member responses stay.
     const rows=scoped.filter(r=>!isNotificationRow(r));
-    console.info(`[CallTree Dashboard] RefID=${ref}: ทั้งหมด ${scoped.length} แถว, ตัดรายการแจ้งเหตุการณ์ (Mode+iMsg ว่าง) ออก ${scoped.length-rows.length} แถว, เหลือ ${rows.length} แถว`);
+    console.info(`[CallTree Dashboard] RefID=${ref}: ทั้งหมด ${scoped.length} แถว, ตัดรายการแจ้งเหตุการณ์ของ Admin (มี Mode/iMsg) ออก ${scoped.length-rows.length} แถว, เหลือ ${rows.length} แถว`);
     if (scoped.length && rows.length===scoped.length) {
       console.warn("[CallTree Dashboard] ไม่มีแถวใดถูกตัดออกเลย — ถ้าคาดว่าควรมีรายการแจ้งเหตุการณ์ถูกกรองออก ให้ตรวจสอบค่าจริงของ Mode/iMsg ในแถวตัวอย่างนี้:", scoped[0]);
     }
@@ -104,7 +106,7 @@
     if (ref === "all") {
       $("modeSubtitle").textContent="";
     } else {
-      const info=scoped.find(r=>fieldText(r.Mode) || r.Created) || {};
+      const info=scoped.find(isNotificationRow) || {};
       const modeVal=fieldText(info.Mode);
       const createdVal=info.Created ? new Date(info.Created).toLocaleString('th-TH') : "";
       $("modeSubtitle").textContent=`Mode: ${modeVal||'-'} · Created: ${createdVal||'-'}`;
