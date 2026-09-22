@@ -11,6 +11,17 @@
   const escapeHtml = value => clean(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
   const isSafe = row => clean(row.ResponseSafe).toLowerCase() === "iamsafe";
   const hasResponse = row => Boolean(clean(row.ClickDateTime) || clean(row.ResponseSafe) || clean(row.DrillResponse));
+  // SharePoint Choice/Lookup/Person fields can come back as objects instead of plain strings.
+  // fieldText() extracts readable text from those shapes so "empty" checks (Mode/iMsg) work correctly.
+  function fieldText(value) {
+    if (value === null || value === undefined) return "";
+    if (typeof value === "object") {
+      if (Array.isArray(value)) return value.map(fieldText).filter(Boolean).join(", ");
+      return clean(value.Value ?? value.LookupValue ?? value.Title ?? value.DisplayName ?? value.Label ?? value.email ?? "");
+    }
+    return clean(value);
+  }
+  const isNotificationRow = row => !fieldText(row.Mode) && !fieldText(row.iMsg);
 
   function setMessage(message, kind="info") {
     const el=$("statusMessage"); el.textContent=message; el.className=`status ${kind}`; show("statusMessage", Boolean(message));
@@ -57,7 +68,7 @@
       const ref=clean(r.RefID);
       if (!ref) return;
       if (!refMsg.has(ref)) refMsg.set(ref, "");
-      const msg=clean(r.iMsg);
+      const msg=fieldText(r.iMsg);
       if (msg && !refMsg.get(ref)) refMsg.set(ref, msg);
     });
     const refs=[...refMsg.keys()].sort((a,b)=>Number(b)-Number(a));
@@ -71,7 +82,13 @@
   }
   function render() {
     const ref=$("refFilter").value;
-    const rows=ref === "all" ? allRows : allRows.filter(r=>clean(r.RefID)===ref);
+    const scoped=ref === "all" ? allRows : allRows.filter(r=>clean(r.RefID)===ref);
+    // Exclude "event notification" rows (both Mode and iMsg blank) from every metric and the table.
+    const rows=scoped.filter(r=>!isNotificationRow(r));
+    console.info(`[CallTree Dashboard] RefID=${ref}: ทั้งหมด ${scoped.length} แถว, ตัดรายการแจ้งเหตุการณ์ (Mode+iMsg ว่าง) ออก ${scoped.length-rows.length} แถว, เหลือ ${rows.length} แถว`);
+    if (scoped.length && rows.length===scoped.length) {
+      console.warn("[CallTree Dashboard] ไม่มีแถวใดถูกตัดออกเลย — ถ้าคาดว่าควรมีรายการแจ้งเหตุการณ์ถูกกรองออก ให้ตรวจสอบค่าจริงของ Mode/iMsg ในแถวตัวอย่างนี้:", scoped[0]);
+    }
     const safe=rows.filter(isSafe).length;
     const responded=rows.filter(hasResponse).length;
     const pending=Math.max(rows.length-responded,0);
@@ -87,8 +104,10 @@
     if (ref === "all") {
       $("modeSubtitle").textContent="";
     } else {
-      const modeVal=clean((rows.find(r=>clean(r.Mode)) || {}).Mode);
-      $("modeSubtitle").textContent=modeVal ? `Mode: ${modeVal}` : "Mode: -";
+      const info=scoped.find(r=>fieldText(r.Mode) || r.Created) || {};
+      const modeVal=fieldText(info.Mode);
+      const createdVal=info.Created ? new Date(info.Created).toLocaleString('th-TH') : "";
+      $("modeSubtitle").textContent=`Mode: ${modeVal||'-'} · Created: ${createdVal||'-'}`;
     }
 
     const byRef={}; rows.forEach(r=>{const key=clean(r.RefID)||"Unknown";byRef[key]??={total:0,responded:0,safe:0};byRef[key].total++;if(hasResponse(r))byRef[key].responded++;if(isSafe(r))byRef[key].safe++;});
@@ -97,9 +116,8 @@
     if(drillChart) drillChart.destroy();
     drillChart=new Chart($("drillChart"),{type:"bar",data:{labels:Object.keys(byRef),datasets:[{label:"Total",data:Object.values(byRef).map(x=>x.total),backgroundColor:"#94a3b8"},{label:"Responded",data:Object.values(byRef).map(x=>x.responded),backgroundColor:"#2563eb"},{label:"Safe",data:Object.values(byRef).map(x=>x.safe),backgroundColor:"#16845b"}]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{beginAtZero:true,ticks:{precision:0}}}}});
 
-    const responseRows=rows.filter(r=>clean(r.Mode) || clean(r.iMsg));
-    $("recordSummary").textContent=`แสดง ${Math.min(responseRows.length,20)} จาก ${responseRows.length} รายการ`;
-    const latest=[...responseRows].sort((a,b)=>new Date(b.Created||0)-new Date(a.Created||0)).slice(0,20);
+    $("recordSummary").textContent=`แสดง ${Math.min(rows.length,20)} จาก ${rows.length} รายการ`;
+    const latest=[...rows].sort((a,b)=>new Date(b.Created||0)-new Date(a.Created||0)).slice(0,20);
     $("responseTable").innerHTML=latest.map(r=>{
       const cls=isSafe(r)?"safe":(clean(r.ResponseSafe)||clean(r.HelpNote))?"responded":"pending";
       const safeNote=[clean(r.ResponseSafe),clean(r.HelpNote)].filter(Boolean).join(" · ")||'-';
