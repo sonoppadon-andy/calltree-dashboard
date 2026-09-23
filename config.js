@@ -7,5 +7,16 @@ window.CALLTREE_CONFIG = {
   sharePointHost: "singhaestate.sharepoint.com",
   sitePath: "/sites/ITProject",
   listName: "Member",
-  graphScopes: ["User.Read", "Sites.Read.All"]
+  graphScopes: ["User.Read", "Sites.Read.All"],
+  // Master employee list ("Phone Book") used to compute who has NOT responded yet.
+  // Site: https://singhaestate.sharepoint.com/sites/snet/Lists/Phone%20Book/
+  // Field names below are the SharePoint INTERNAL field names (confirmed via each
+  // column's FldEdit.aspx URL 2026-09-23) — NOT the Display Names shown in the UI.
+  // Do not rename these to the Display Names (Email Address/BU/Division/Job Title);
+  // Graph API needs the internal "field_NN" names in $select or it silently returns blank.
+  phoneBook: {
+    sitePath: "/sites/snet",
+    listName: "Phone Book",
+    fields: { email: "field_15", bu: "field_16", division: "field_14", jobTitle: "field_10" }
+  }
 };
