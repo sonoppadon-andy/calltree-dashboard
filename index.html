@@ -9,7 +9,7 @@
        layer of defense in case any script here is ever compromised (e.g. supply-chain attack on
        one of the CDN libraries below). Keep this in sync whenever a new external host is added. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self'; connect-src 'self' https://graph.microsoft.com https://login.microsoftonline.com; img-src 'self' data:; frame-src https://login.microsoftonline.com; object-src 'none'; base-uri 'self'; form-action 'self'">
-  <link rel="stylesheet" href="styles.css?v=20260923a">
+  <link rel="stylesheet" href="styles.css?v=20260923b">
   <!-- SECURITY (added 2026-09-23): Subresource Integrity (SRI) on every third-party script.
        Without `integrity`, a compromised CDN file would run with full access to this page's
        MSAL access token (in sessionStorage) and the whole SharePoint "Member" list. The browser
@@ -27,8 +27,8 @@
     integrity="sha384-zYPBGXwO4633CABX/5Spf6emCKUJCfoOkhOMYyxMsatqQZPnDblmmOewfjsIVWCM" crossorigin="anonymous"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"
     integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw" crossorigin="anonymous"></script>
-  <script defer src="config.js?v=20260923a"></script>
-  <script defer src="app.js?v=20260923a"></script>
+  <script defer src="config.js?v=20260923b"></script>
+  <script defer src="app.js?v=20260923b"></script>
 </head>
 <body>
   <div id="loginView" class="login-page">
@@ -68,12 +68,30 @@
         <article class="kpi purple"><span>พนักงานที่ตอบทั้งหมด</span><strong id="kpiResponded">0</strong></article>
         <article class="kpi orange hidden"><span>Pending</span><strong id="kpiPending">0</strong></article>
         <article class="kpi red"><span>% ผู้ที่ตอบผิด</span><strong id="kpiAverage">0%</strong></article>
+        <article class="kpi teal"><span>ยังไม่ตอบ (Master - Phone Book)</span><strong id="kpiMissing">–</strong></article>
       </div>
 
       <div class="chart-grid">
         <article class="panel chart-panel"><h2>Response Status</h2><div class="chart-box"><canvas id="statusChart"></canvas></div></article>
         <article class="panel chart-panel"><h2>จำนวนผู้ตอบตามช่วงเวลา 15 นาที</h2><div class="chart-box"><canvas id="drillChart"></canvas></div></article>
       </div>
+
+      <article class="panel">
+        <div class="panel-heading">
+          <h2>รายชื่อที่ยังไม่ตอบ (เทียบกับ Phone Book Master List)</h2>
+          <div class="panel-heading-right">
+            <span id="missingSummary"></span>
+            <button id="exportMissingCsvButton" class="secondary small">Export CSV</button>
+          </div>
+        </div>
+        <div class="chart-box missing-chart-box"><canvas id="missingChart"></canvas></div>
+        <div class="table-wrap missing-table-wrap">
+          <table>
+            <thead><tr><th>Email</th><th>BU</th><th>Division (สายงาน)</th><th>Job Title</th></tr></thead>
+            <tbody id="missingTable"></tbody>
+          </table>
+        </div>
+      </article>
 
       <article class="panel">
         <div class="panel-heading">
