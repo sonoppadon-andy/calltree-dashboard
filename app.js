@@ -3,8 +3,10 @@
   const cfg = window.CALLTREE_CONFIG;
   let msalApp;
   let allRows = [];
+  let allPhoneBook = []; // Master employee list from the "Phone Book" SharePoint site (see config.js)
   let statusChart;
   let drillChart;
+  let missingChart;
   // Cross-linking charts -> table: currentRows/currentBucketRowIds are (re)filled on every
   // render() and read by the chart click handlers (which only call renderTable(), never the
   // full render(), so the charts themselves aren't destroyed/rebuilt on every click).
@@ -15,6 +17,13 @@
   const PAGE_SIZE = 30;
   let currentPage = 1;
   let columnFilters = {id:"", refid:"", email:"", created:"", status:"", drill:""};
+  // "Not yet responded" (Phone Book master list minus everyone who has responded in the
+  // current RefID scope): currentMissingRows/currentPhoneBookTotal are (re)filled on every
+  // render(); missingBuFilter is set by clicking a bar of the missingChart and only calls
+  // renderMissingTable() (never render()), same pattern as the Member table's activeFilter.
+  let currentMissingRows = [];
+  let currentPhoneBookTotal = 0;
+  let missingBuFilter = null;
   const $ = id => document.getElementById(id);
   const show = (id, visible=true) => $(id).classList.toggle("hidden", !visible);
   const clean = value => String(value ?? "").trim();
@@ -77,6 +86,34 @@
     }
     return rows;
   }
+  // Reads the "Phone Book" master list from the /sites/snet SharePoint site (separate site
+  // from cfg.sitePath/"Member"). Same pagination pattern as readSharePointList(). Field names
+  // come from cfg.phoneBook.fields — internal SharePoint names (field_15/field_16/field_14/
+  // field_10), confirmed via each column's FldEdit.aspx URL — never guess these, see config.js.
+  async function readPhoneBookList(token) {
+    const pb = cfg.phoneBook;
+    if (!pb) return [];
+    const site = await graphGet(`/sites/${cfg.sharePointHost}:${pb.sitePath}?$select=id,displayName`, token);
+    const lists = await graphGet(`/sites/${site.id}/lists?$select=id,displayName`, token);
+    const list = (lists.value || []).find(x => x.displayName === pb.listName);
+    if (!list) throw new Error(`ไม่พบ SharePoint List ชื่อ ${pb.listName} ที่ไซต์ ${pb.sitePath}`);
+    const f = pb.fields;
+    const fields = `${f.email},${f.bu},${f.division},${f.jobTitle}`;
+    let next = `/sites/${site.id}/lists/${list.id}/items?$expand=fields($select=${fields})&$select=id,fields&$top=999`;
+    const rows = [];
+    while (next) {
+      const page = await graphGet(next, token);
+      rows.push(...(page.value || []).map(item => ({
+        ID: item.id,
+        Email: fieldText(item.fields[f.email]),
+        BU: fieldText(item.fields[f.bu]),
+        Division: fieldText(item.fields[f.division]),
+        JobTitle: fieldText(item.fields[f.jobTitle]),
+      })));
+      next = page["@odata.nextLink"] || null;
+    }
+    return rows;
+  }
   function fillRefFilter(rows) {
     const select=$("refFilter"), previous=select.value;
     const refMsg=new Map();
@@ -103,6 +140,7 @@
     columnFilters={id:"", refid:"", email:"", created:"", status:"", drill:""};
     document.querySelectorAll(".col-filter").forEach(input=>{ input.value=""; });
     currentPage=1;
+    missingBuFilter=null;
     const ref=$("refFilter").value;
     const scoped=ref === "all" ? allRows : allRows.filter(r=>clean(r.RefID)===ref);
     // Exclude the Admin announcement row (has Mode/iMsg) from every metric and the table — only member responses stay.
@@ -258,8 +296,70 @@
       renderTable();
     }}});
 
+    // "Not yet responded" vs. the Phone Book master list: every unique email in the master
+    // list that is NOT in respondedEmails (computed above, already scoped to the current RefID
+    // filter same as everything else in this function). Dedupe the Phone Book itself by email
+    // first (keep the first row per email) in case the same person has more than one row there.
+    const phoneBookByEmail={};
+    allPhoneBook.forEach(p=>{
+      const email=clean(p.Email).toLowerCase();
+      if (!email || phoneBookByEmail[email]) return;
+      phoneBookByEmail[email]=p;
+    });
+    const phoneBookEmails=Object.keys(phoneBookByEmail);
+    const missingRows=phoneBookEmails.filter(e=>!respondedEmails.has(e)).map(e=>phoneBookByEmail[e]);
+    currentMissingRows=missingRows;
+    currentPhoneBookTotal=phoneBookEmails.length;
+    // Show "–" (not "0") when the Phone Book hasn't loaded at all, so a genuine "everyone
+    // responded" (0 missing, Phone Book loaded fine) is never confused with "no master data".
+    $("kpiMissing").textContent=phoneBookEmails.length ? missingRows.length.toLocaleString("th-TH") : "–";
+
+    const missingByBU={};
+    missingRows.forEach(p=>{ const bu=clean(p.BU)||"ไม่ระบุ BU"; missingByBU[bu]=(missingByBU[bu]||0)+1; });
+    const buLabels=Object.keys(missingByBU).sort((a,b)=>missingByBU[b]-missingByBU[a]);
+    const buData=buLabels.map(b=>missingByBU[b]);
+    if(missingChart) missingChart.destroy();
+    missingChart=new Chart($("missingChart"),{type:"bar",data:{labels:buLabels,datasets:[{label:"ยังไม่ตอบ",data:buData,backgroundColor:"#0e7490",borderRadius:4,maxBarThickness:28}]},options:{indexAxis:"y",responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:item=>`${item.parsed.x.toLocaleString('th-TH')} คน`}}},scales:{x:{beginAtZero:true,ticks:{precision:0}},y:{grid:{display:false}}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
+      if (!elements.length) return;
+      const bu=buLabels[elements[0].index];
+      missingBuFilter=(missingBuFilter===bu) ? null : bu;
+      renderMissingTable();
+    }}});
+
     currentRows=rows;
     renderTable();
+    renderMissingTable();
+  }
+  // Renders the "ยังไม่ตอบ (Master - Phone Book)" table: currentMissingRows, filtered by
+  // missingBuFilter (set by clicking a bar of missingChart) if any, sorted by Email. Called on
+  // its own by the chart's onClick and the clear-filter link, never destroys/rebuilds missingChart.
+  function renderMissingTable() {
+    const list=missingBuFilter ? currentMissingRows.filter(p=>(clean(p.BU)||"ไม่ระบุ BU")===missingBuFilter) : currentMissingRows;
+    const sorted=[...list].sort((a,b)=>clean(a.Email).localeCompare(clean(b.Email)));
+    const filterNote=missingBuFilter
+      ? ` — กรองตาม BU: <strong>${escapeHtml(missingBuFilter)}</strong> <a href="#" id="clearMissingFilter" style="color:#2563eb;text-decoration:underline;">(ล้างตัวกรอง)</a>`
+      : "";
+    $("missingSummary").innerHTML=currentPhoneBookTotal
+      ? `ยังไม่ตอบ ${sorted.length.toLocaleString("th-TH")} จาก ${currentPhoneBookTotal.toLocaleString("th-TH")} คนใน Master${filterNote}`
+      : `ยังไม่ได้โหลดข้อมูล Phone Book (Master List)`;
+    const clearLink=$("clearMissingFilter");
+    if (clearLink) clearLink.addEventListener("click", e=>{ e.preventDefault(); missingBuFilter=null; renderMissingTable(); });
+    $("missingTable").innerHTML=sorted.map(p=>
+      `<tr><td>${escapeHtml(p.Email)||'-'}</td><td>${escapeHtml(p.BU)||'-'}</td><td>${escapeHtml(p.Division)||'-'}</td><td>${escapeHtml(p.JobTitle)||'-'}</td></tr>`
+    ).join("") || `<tr><td colspan="4">${currentPhoneBookTotal ? (missingBuFilter?'ไม่พบข้อมูลที่ตรงกับตัวกรอง':'ทุกคนใน Master ตอบครบแล้ว') : '-'}</td></tr>`;
+  }
+  // Exports the FULL current "not yet responded" match set (missingBuFilter applied) — same
+  // csvEscape/BOM/downloadBlob pattern as exportCsv(), kept separate since it's a different
+  // column set (Email/BU/Division/JobTitle, no ID/RefID/Created/DrillResponse).
+  function exportMissingCsv() {
+    const list=missingBuFilter ? currentMissingRows.filter(p=>(clean(p.BU)||"ไม่ระบุ BU")===missingBuFilter) : currentMissingRows;
+    if (!list.length) { setMessage("ไม่มีรายชื่อที่ยังไม่ตอบตามตัวกรองปัจจุบัน (หรือยังไม่ได้โหลด Phone Book)", "error"); return; }
+    const csvEscape=v=>{ const s=String(v ?? ""); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
+    const headers=["Email","BU","Division","JobTitle"];
+    const lines=[headers.join(",")];
+    list.forEach(p=>{ lines.push([clean(p.Email), clean(p.BU), clean(p.Division), clean(p.JobTitle)].map(csvEscape).join(",")); });
+    const blob=new Blob(["﻿"+lines.join("\r\n")], {type:"text/csv;charset=utf-8;"});
+    downloadBlob(blob, `phonebook-not-responded-${exportTimestamp()}.csv`);
   }
   // Text shown/matched for a row in a given Latest Responses column — shared by the per-column
   // filter inputs and by CSV/Excel export, so "what you filtered on" and "what you exported"
@@ -361,7 +461,23 @@
   }
   async function loadData() {
     show("loading",true); show("content",false); setMessage("");
-    try { const token=await acquireToken(); allRows=await readSharePointList(token); fillRefFilter(allRows); render(); show("content",true); }
+    try {
+      const token=await acquireToken();
+      allRows=await readSharePointList(token);
+      // Phone Book (Master List) is a separate SharePoint site/list from Member — load it in its
+      // own try/catch so a problem there (e.g. no access to /sites/snet, or the list/columns
+      // change) never breaks the Member dashboard itself; only the "ยังไม่ตอบ" KPI/chart/table
+      // degrade (kpiMissing shows "–", the panel shows an empty state).
+      try { allPhoneBook=await readPhoneBookList(token); }
+      catch(pbError) {
+        console.error(pbError);
+        allPhoneBook=[];
+        setMessage(`โหลด Phone Book (Master List) ไม่สำเร็จ: ${pbError.message||pbError} — ข้อมูล Response อื่นใช้งานได้ตามปกติ แต่ KPI/กราฟ/ตาราง "ยังไม่ตอบ" จะไม่แสดงผล`, "error");
+      }
+      fillRefFilter(allRows);
+      render();
+      show("content",true);
+    }
     catch(error){ console.error(error); setMessage(error.message || "ไม่สามารถโหลดข้อมูลได้", "error"); }
     finally { show("loading",false); }
   }
@@ -407,5 +523,6 @@
   $("nextPageButton").addEventListener("click", ()=>{ currentPage=currentPage+1; renderTable(); });
   $("exportCsvButton").addEventListener("click", exportCsv);
   $("exportExcelButton").addEventListener("click", exportExcel);
+  $("exportMissingCsvButton").addEventListener("click", exportMissingCsv);
   window.addEventListener("DOMContentLoaded",init);
 })();
