@@ -108,8 +108,13 @@
     // Exclude the Admin announcement row (has Mode/iMsg) from every metric and the table — only member responses stay.
     const rows=scoped.filter(r=>!isNotificationRow(r));
     console.info(`[CallTree Dashboard] RefID=${ref}: ทั้งหมด ${scoped.length} แถว, ตัดรายการแจ้งเหตุการณ์ของ Admin (มี Mode/iMsg) ออก ${scoped.length-rows.length} แถว, เหลือ ${rows.length} แถว`);
+    // SECURITY (fixed 2026-09-23): this used to also console.warn() the raw row object
+    // (scoped[0]) when no row got excluded, to help debug Mode/iMsg field names. That dumped
+    // real employee data (email, response text, etc.) into the browser console, where it could
+    // leak via a shared screenshot. Keep only the aggregate counts above — no raw row objects
+    // are logged anywhere in this file.
     if (scoped.length && rows.length===scoped.length) {
-      console.warn("[CallTree Dashboard] ไม่มีแถวใดถูกตัดออกเลย — ถ้าคาดว่าควรมีรายการแจ้งเหตุการณ์ถูกกรองออก ให้ตรวจสอบค่าจริงของ Mode/iMsg ในแถวตัวอย่างนี้:", scoped[0]);
+      console.warn(`[CallTree Dashboard] RefID=${ref}: ไม่มีแถวใดถูกตัดออกเลย — ถ้าคาดว่าควรมีรายการแจ้งเหตุการณ์ถูกกรองออก ให้ตรวจสอบค่า Mode/iMsg ของ List ใน SharePoint โดยตรง`);
     }
     // Safe / Responded now count unique employees (by email), not raw rows — one member can
     // appear on multiple rows for the same RefID (re-submits, drill + safe-check, etc.).
@@ -179,8 +184,12 @@
       const modeVal=fieldText(info.Mode);
       const createdVal=info.Created ? new Date(info.Created).toLocaleString('th-TH') : "";
       const msgVal=fieldText(info.iMsg);
+      // SECURITY (fixed 2026-09-23): this used to also console.warn() the full raw `info`
+      // object (the Admin/notification row from Graph API) to help debug field-name mismatches.
+      // That row can carry sensitive text (iMsg content, etc.), so it must never be dumped to
+      // the console in production. Log only that the condition happened, no row data.
       if (!modeVal && info.ID) {
-        console.warn(`[CallTree Dashboard] RefID=${ref}: อ่านค่า Mode จาก field "Mode" ไม่ได้ (ได้ค่าว่าง) ทั้งที่ควรมีข้อมูล — นี่คือ raw object ทั้งหมดที่ Graph API ส่งกลับมาสำหรับแถวประกาศ Admin (ID ${info.ID}) ลองหาว่าค่า "Drill" ที่คาดไว้อยู่ภายใต้ property ชื่ออะไรจริง ๆ:`, info);
+        console.warn(`[CallTree Dashboard] RefID=${ref}: อ่านค่า Mode จาก field "Mode" ไม่ได้ (ได้ค่าว่าง) ทั้งที่ควรมีข้อมูล (แถวประกาศ Admin ID ${info.ID}) — ตรวจสอบชื่อ Internal Field ของคอลัมน์ Mode ใน SharePoint`);
       }
       $("modeSubtitle").textContent=`Mode: ${modeVal||'-'} · Created: ${createdVal||'-'} · iMsg: ${msgVal||'-'}`;
     }
