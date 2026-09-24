@@ -58,18 +58,21 @@
   // The Admin broadcast/announcement row carries the Mode + iMsg text for the whole RefID batch;
   // individual member response rows do not have Mode/iMsg populated. So "has Mode or iMsg" = notification row.
   const isNotificationRow = row => Boolean(fieldText(row.Mode) || fieldText(row.iMsg));
-  // "Type" filter (added 2026-09-24) on the Phone Book report table: groups Job Title into
-  // Management (VP level and above) vs. Staff, per the user's explicit rule ("Management คือ
-  // Job Title ที่เป็น VP ขึ้นไป"). This is a best-effort KEYWORD match, not exact data — the
-  // Phone Book's actual Job Title values weren't available to design this against directly
-  // (per "Never Guess", nothing here was invented from assumed org-chart data), so it's built
-  // to be conservative and explicit rather than guessy:
-  //  - Matches "Vice President"/VP/SVP/EVP (word-boundary, so it won't match inside another
-  //    word) and unambiguous C-suite/top titles (President, Chairman, CEO/CFO/COO/CTO,
-  //    Managing Director) as Management.
-  //  - Explicitly EXCLUDES support/staff roles that happen to contain one of those words as a
-  //    substring but are not themselves that rank — e.g. "CEO Driver" (a driver role, not the
-  //    CEO), "Secretary to MD", "Personal Assistant to VP". Found via a real Phone Book
+  // "Type" filter on the Phone Book report table: groups Job Title into Management (VP level
+  // and above) vs. Staff, per the user's explicit rule ("Management คือ Job Title ที่เป็น VP
+  // ขึ้นไป"). This is a best-effort KEYWORD match, not exact data — the Phone Book's actual Job
+  // Title values weren't available to design this against directly (per "Never Guess", nothing
+  // here was invented from assumed org-chart data), so it's built to be conservative and
+  // explicit rather than guessy:
+  //  - Matches "Vice President"/VP/AVP/SVP/EVP (word-boundary, so it won't match inside another
+  //    word) and unambiguous C-suite/top titles (President, Chairman, CEO/CFO/COO/CTO, Managing
+  //    Director) as Management. AVP (Assistant Vice President) was explicitly added to
+  //    Management 2026-09-24 per the user's follow-up request — it was excluded when this
+  //    function was first built (reasoned as one rank below full VP), but the user confirmed
+  //    AVP should count as "VP ขึ้นไป" too.
+  //  - Still explicitly EXCLUDES support/staff roles that happen to contain one of those words
+  //    as a substring but are not themselves that rank — e.g. "CEO Driver" (a driver role, not
+  //    the CEO), "Secretary to MD", "Personal Assistant to VP". Found via a real Phone Book
   //    screenshot in this conversation (RefID BU=HC&GA had a "CEO Driver" job title) — without
   //    this exclusion list a naive substring match would have wrongly classified that row as
   //    Management.
@@ -79,12 +82,10 @@
   function classifyJobType(jobTitle) {
     const t = clean(jobTitle).toLowerCase();
     if (!t) return null;
-    // "Assistant Vice President" is one rank BELOW VP, not VP-and-above, so it must be
-    // excluded even though its text contains "vice president" as a substring.
-    const excludePatterns = [/driver/, /secretary/, /personal assistant/, /\bpa\b/, /assistant to/, /housekeeper/, /assistant vice president/, /\bavp\b/];
+    const excludePatterns = [/driver/, /secretary/, /personal assistant/, /\bpa\b/, /assistant to/, /housekeeper/];
     if (excludePatterns.some(p => p.test(t))) return "staff";
     const managementPatterns = [
-      /vice president/, /\bvp\b/, /\bsvp\b/, /\bevp\b/,
+      /vice president/, /\bvp\b/, /\bavp\b/, /\bsvp\b/, /\bevp\b/,
       /\bpresident\b/, /\bchairman\b/,
       /chief executive officer/, /\bceo\b/,
       /chief financial officer/, /\bcfo\b/,
