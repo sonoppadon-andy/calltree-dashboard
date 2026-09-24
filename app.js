@@ -25,14 +25,19 @@
   // EVERY master-list person (not just the not-yet-responded ones — widened 2026-09-24 to
   // support the ตอบ/ไม่ตอบ status filter/column below), each tagged with a `Responded`
   // boolean; currentPhoneBookTotal is the master headcount. Both are (re)filled on every
-  // render(). missingBuFilter (chart-bar click) and missingStatusFilter (ตอบ/ไม่ตอบ dropdown,
-  // added 2026-09-24) combine to filter the table; missingPage (added 2026-09-24, same
-  // PAGE_SIZE as the Member table) paginates it. All three only call renderMissingTable()
-  // (never render()), same pattern as the Member table's activeFilter/columnFilters/currentPage.
+  // render(). Four filters combine (AND) to filter the table: missingBuFilter (BU — driven by
+  // BOTH the #missingBuFilterSelect dropdown and clicking a missingChart bar, added 2026-09-24
+  // as the filter-bar section, kept in sync both ways), missingDeptFilter (Department dropdown,
+  // added 2026-09-24), reportStatusFilter (ตอบ/ไม่ตอบ dropdown) and reportTypeFilter (Type
+  // dropdown, added 2026-09-24 — see classifyJobType() below). missingPage (same PAGE_SIZE as
+  // the Member table) paginates the result. All of these only call renderMissingTable() (never
+  // render()), same pattern as the Member table's activeFilter/columnFilters/currentPage.
   let currentReportRows = [];
   let currentPhoneBookTotal = 0;
   let missingBuFilter = null;
+  let missingDeptFilter = null;
   let reportStatusFilter = null; // null (all) | "responded" | "missing"
+  let reportTypeFilter = null; // null (all) | "management" | "staff"
   let missingPage = 1;
   const $ = id => document.getElementById(id);
   const show = (id, visible=true) => $(id).classList.toggle("hidden", !visible);
@@ -53,6 +58,43 @@
   // The Admin broadcast/announcement row carries the Mode + iMsg text for the whole RefID batch;
   // individual member response rows do not have Mode/iMsg populated. So "has Mode or iMsg" = notification row.
   const isNotificationRow = row => Boolean(fieldText(row.Mode) || fieldText(row.iMsg));
+  // "Type" filter (added 2026-09-24) on the Phone Book report table: groups Job Title into
+  // Management (VP level and above) vs. Staff, per the user's explicit rule ("Management คือ
+  // Job Title ที่เป็น VP ขึ้นไป"). This is a best-effort KEYWORD match, not exact data — the
+  // Phone Book's actual Job Title values weren't available to design this against directly
+  // (per "Never Guess", nothing here was invented from assumed org-chart data), so it's built
+  // to be conservative and explicit rather than guessy:
+  //  - Matches "Vice President"/VP/SVP/EVP (word-boundary, so it won't match inside another
+  //    word) and unambiguous C-suite/top titles (President, Chairman, CEO/CFO/COO/CTO,
+  //    Managing Director) as Management.
+  //  - Explicitly EXCLUDES support/staff roles that happen to contain one of those words as a
+  //    substring but are not themselves that rank — e.g. "CEO Driver" (a driver role, not the
+  //    CEO), "Secretary to MD", "Personal Assistant to VP". Found via a real Phone Book
+  //    screenshot in this conversation (RefID BU=HC&GA had a "CEO Driver" job title) — without
+  //    this exclusion list a naive substring match would have wrongly classified that row as
+  //    Management.
+  // If any Job Title in the real data is still misclassified, tell me the exact title text and
+  // which bucket it should be in — I'll add it to the keyword/exclude lists below rather than
+  // guess further ones preemptively.
+  function classifyJobType(jobTitle) {
+    const t = clean(jobTitle).toLowerCase();
+    if (!t) return null;
+    // "Assistant Vice President" is one rank BELOW VP, not VP-and-above, so it must be
+    // excluded even though its text contains "vice president" as a substring.
+    const excludePatterns = [/driver/, /secretary/, /personal assistant/, /\bpa\b/, /assistant to/, /housekeeper/, /assistant vice president/, /\bavp\b/];
+    if (excludePatterns.some(p => p.test(t))) return "staff";
+    const managementPatterns = [
+      /vice president/, /\bvp\b/, /\bsvp\b/, /\bevp\b/,
+      /\bpresident\b/, /\bchairman\b/,
+      /chief executive officer/, /\bceo\b/,
+      /chief financial officer/, /\bcfo\b/,
+      /chief operating officer/, /\bcoo\b/,
+      /chief technology officer/, /\bcto\b/,
+      /chief human/, /\bchro\b/,
+      /managing director/, /\bmd\b/,
+    ];
+    return managementPatterns.some(p => p.test(t)) ? "management" : "staff";
+  }
 
   function setMessage(message, kind="info") {
     const el=$("statusMessage"); el.textContent=message; el.className=`status ${kind}`; show("statusMessage", Boolean(message));
@@ -153,10 +195,13 @@
     document.querySelectorAll(".col-filter").forEach(input=>{ input.value=""; });
     currentPage=1;
     missingBuFilter=null;
+    missingDeptFilter=null;
     reportStatusFilter=null;
+    reportTypeFilter=null;
     missingPage=1;
-    const statusFilterEl=$("missingStatusFilter");
-    if (statusFilterEl) statusFilterEl.value="";
+    ["missingBuFilterSelect","missingDeptFilterSelect","missingStatusFilter","missingTypeFilterSelect"].forEach(id=>{
+      const el=$(id); if (el) el.value="";
+    });
     const ref=$("refFilter").value;
     const scoped=ref === "all" ? allRows : allRows.filter(r=>clean(r.RefID)===ref);
     // Exclude the Admin announcement row (has Mode/iMsg) from every metric and the table — only member responses stay.
@@ -390,23 +435,45 @@
       // that BU too, which can legitimately come back empty if everyone in that BU responded).
       const bu=buLabels[elements[0].index];
       missingBuFilter=(missingBuFilter===bu) ? null : bu;
+      const buSelect=$("missingBuFilterSelect");
+      if (buSelect) buSelect.value=missingBuFilter||"";
+      missingPage=1;
       renderMissingTable();
     }}});
 
+    populateReportFilterSelects(allMasterRows);
     currentRows=rows;
     renderTable();
     renderMissingTable();
   }
+  // Populates the BU / Department filter-bar dropdowns (added 2026-09-24) from whatever's
+  // actually in the current Phone Book data, preserving each dropdown's current selection if
+  // it's still a valid option (same "preserve previous" pattern as fillRefFilter()). Blanks
+  // are bucketed as "ไม่ระบุ BU"/"ไม่ระบุ Department" — matching how renderMissingTable()'s own
+  // filtering already treats blanks, so a value shown here always matches something below.
+  function populateReportFilterSelects(rows) {
+    const buSelect=$("missingBuFilterSelect"), deptSelect=$("missingDeptFilterSelect");
+    const buValues=[...new Set(rows.map(p=>clean(p.BU)||"ไม่ระบุ BU"))].sort((a,b)=>a.localeCompare(b));
+    const deptValues=[...new Set(rows.map(p=>clean(p.Department)||"ไม่ระบุ Department"))].sort((a,b)=>a.localeCompare(b));
+    const prevBu=buSelect.value, prevDept=deptSelect.value;
+    buSelect.innerHTML='<option value="">ทั้งหมด</option>'+buValues.map(v=>`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+    deptSelect.innerHTML='<option value="">ทั้งหมด</option>'+deptValues.map(v=>`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+    if (buValues.includes(prevBu)) buSelect.value=prevBu;
+    if (deptValues.includes(prevDept)) deptSelect.value=prevDept;
+  }
   // Renders the "รายงานผู้ที่ยังไม่ตอบรับ/ตอบรับ" table: currentReportRows (EVERY master-list
-  // person, tagged Responded true/false — widened 2026-09-24), filtered by missingBuFilter
-  // (chart-bar click) and/or reportStatusFilter (the ตอบ/ไม่ตอบ dropdown, added 2026-09-24),
-  // sorted by Email, paginated at PAGE_SIZE (30/page, added 2026-09-24 — same as the Member
-  // table, so a large Master list is never "crammed" into one scrolling box). Called on its
-  // own by the chart's onClick, the status-filter dropdown, the pagination buttons, and the
-  // clear-filter link — never destroys/rebuilds missingChart.
+  // person, tagged Responded true/false — widened 2026-09-24), filtered by missingBuFilter,
+  // missingDeptFilter, reportStatusFilter and reportTypeFilter (the filter-bar's 4 dropdowns,
+  // added 2026-09-24 — BU is also settable by clicking a missingChart bar, kept in sync both
+  // ways), sorted by Email, paginated at PAGE_SIZE (30/page — same as the Member table, so a
+  // large Master list is never "crammed" into one scrolling box). Called on its own by the
+  // chart's onClick, the filter-bar dropdowns, the pagination buttons, and the clear-filter
+  // link/button — never destroys/rebuilds missingChart.
   function renderMissingTable() {
     let list=currentReportRows;
     if (missingBuFilter) list=list.filter(p=>(clean(p.BU)||"ไม่ระบุ BU")===missingBuFilter);
+    if (missingDeptFilter) list=list.filter(p=>(clean(p.Department)||"ไม่ระบุ Department")===missingDeptFilter);
+    if (reportTypeFilter) list=list.filter(p=>classifyJobType(p.JobTitle)===reportTypeFilter);
     if (reportStatusFilter==="responded") list=list.filter(p=>p.Responded);
     else if (reportStatusFilter==="missing") list=list.filter(p=>!p.Responded);
     const sorted=[...list].sort((a,b)=>clean(a.Email).localeCompare(clean(b.Email)));
@@ -419,32 +486,36 @@
     const pageRows=sorted.slice(startIdx, startIdx+PAGE_SIZE);
 
     const filterParts=[];
-    if (missingBuFilter) filterParts.push(`BU: <strong>${escapeHtml(missingBuFilter)}</strong> <a href="#" id="clearMissingFilter" style="color:#2563eb;text-decoration:underline;">(ล้าง)</a>`);
+    if (missingBuFilter) filterParts.push(`BU: <strong>${escapeHtml(missingBuFilter)}</strong>`);
+    if (missingDeptFilter) filterParts.push(`Department: <strong>${escapeHtml(missingDeptFilter)}</strong>`);
     if (reportStatusFilter) filterParts.push(`สถานะ: <strong>${reportStatusFilter==="responded"?"ตอบรับแล้ว":"ยังไม่ตอบรับ"}</strong>`);
+    if (reportTypeFilter) filterParts.push(`Type: <strong>${reportTypeFilter==="management"?"Management":"Staff"}</strong>`);
+    const anyFilterActive=Boolean(missingBuFilter||missingDeptFilter||reportStatusFilter||reportTypeFilter);
     const filterNote=filterParts.length ? ` — กรองตาม ${filterParts.join(", ")}` : "";
     const rangeText=total ? `${startIdx+1}–${Math.min(startIdx+PAGE_SIZE,total)}` : "0";
     $("missingSummary").innerHTML=currentPhoneBookTotal
       ? `แสดง ${rangeText} จาก ${total.toLocaleString("th-TH")} รายการ (Master ทั้งหมด ${currentPhoneBookTotal.toLocaleString("th-TH")} คน)${filterNote}`
       : `ยังไม่ได้โหลดข้อมูล Phone Book (Master List)`;
-    const clearLink=$("clearMissingFilter");
-    if (clearLink) clearLink.addEventListener("click", e=>{ e.preventDefault(); missingBuFilter=null; missingPage=1; renderMissingTable(); });
+    show("clearMissingAllFiltersButton", anyFilterActive);
     $("missingTable").innerHTML=pageRows.map(p=>{
       const cls=p.Responded?"responded":"pending";
       const label=p.Responded?"ตอบรับแล้ว":"ยังไม่ตอบรับ";
       return `<tr><td>${escapeHtml(p.Email)||'-'}</td><td>${escapeHtml(p.BU)||'-'}</td><td>${escapeHtml(p.Division)||'-'}</td><td>${escapeHtml(p.JobTitle)||'-'}</td><td>${escapeHtml(p.Department)||'-'}</td><td><span class="badge ${cls}">${label}</span></td></tr>`;
-    }).join("") || `<tr><td colspan="6">${currentPhoneBookTotal ? (missingBuFilter||reportStatusFilter?'ไม่พบข้อมูลที่ตรงกับตัวกรอง':'ไม่พบข้อมูล') : '-'}</td></tr>`;
+    }).join("") || `<tr><td colspan="6">${currentPhoneBookTotal ? (anyFilterActive?'ไม่พบข้อมูลที่ตรงกับตัวกรอง':'ไม่พบข้อมูล') : '-'}</td></tr>`;
 
     $("missingPageIndicator").textContent=`หน้า ${missingPage} / ${totalPages}`;
     $("missingPrevPageButton").disabled=missingPage<=1;
     $("missingNextPageButton").disabled=missingPage>=totalPages;
   }
-  // Exports the FULL current match set (missingBuFilter + reportStatusFilter applied, ALL
-  // pages, not just the visible page — widened 2026-09-24 along with the table above) — same
-  // csvEscape/BOM/downloadBlob pattern as exportCsv(). Now includes the Status column so an
-  // "all" export can still tell responded/not-responded apart.
+  // Exports the FULL current match set (all 4 filter-bar filters applied — BU, Department,
+  // ตอบ/ไม่ตอบ, Type — ALL pages, not just the visible page) — same csvEscape/BOM/downloadBlob
+  // pattern as exportCsv(). Includes the Status column so an "all" export can still tell
+  // responded/not-responded apart.
   function exportMissingCsv() {
     let list=currentReportRows;
     if (missingBuFilter) list=list.filter(p=>(clean(p.BU)||"ไม่ระบุ BU")===missingBuFilter);
+    if (missingDeptFilter) list=list.filter(p=>(clean(p.Department)||"ไม่ระบุ Department")===missingDeptFilter);
+    if (reportTypeFilter) list=list.filter(p=>classifyJobType(p.JobTitle)===reportTypeFilter);
     if (reportStatusFilter==="responded") list=list.filter(p=>p.Responded);
     else if (reportStatusFilter==="missing") list=list.filter(p=>!p.Responded);
     if (!list.length) { setMessage("ไม่มีรายชื่อตามตัวกรองปัจจุบัน (หรือยังไม่ได้โหลด Phone Book)", "error"); return; }
@@ -640,7 +711,15 @@
   $("exportCsvButton").addEventListener("click", exportCsv);
   $("exportExcelButton").addEventListener("click", exportExcel);
   $("exportMissingCsvButton").addEventListener("click", exportMissingCsv);
+  $("missingBuFilterSelect").addEventListener("change", e=>{ missingBuFilter=e.target.value||null; missingPage=1; renderMissingTable(); });
+  $("missingDeptFilterSelect").addEventListener("change", e=>{ missingDeptFilter=e.target.value||null; missingPage=1; renderMissingTable(); });
   $("missingStatusFilter").addEventListener("change", e=>{ reportStatusFilter=e.target.value||null; missingPage=1; renderMissingTable(); });
+  $("missingTypeFilterSelect").addEventListener("change", e=>{ reportTypeFilter=e.target.value||null; missingPage=1; renderMissingTable(); });
+  $("clearMissingAllFiltersButton").addEventListener("click", ()=>{
+    missingBuFilter=null; missingDeptFilter=null; reportStatusFilter=null; reportTypeFilter=null; missingPage=1;
+    ["missingBuFilterSelect","missingDeptFilterSelect","missingStatusFilter","missingTypeFilterSelect"].forEach(id=>{ $(id).value=""; });
+    renderMissingTable();
+  });
   $("missingPrevPageButton").addEventListener("click", ()=>{ missingPage=Math.max(1,missingPage-1); renderMissingTable(); });
   $("missingNextPageButton").addEventListener("click", ()=>{ missingPage=missingPage+1; renderMissingTable(); });
   window.addEventListener("DOMContentLoaded",init);
