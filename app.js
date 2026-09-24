@@ -46,6 +46,19 @@
   let reportTypeFilter = null; // null (all) | "management" | "staff"
   let reportBucketFilter = null; // null (all) | bucket-start minute (number, e.g. 0, 15, 30...)
   let missingPage = 1;
+  // Dashboard's OWN filter bar (added 2026-09-25) — same 5 dimensions as the Report tab's filter
+  // bar above, but scopes the WHOLE Dashboard view (every KPI card, both charts, and the Latest
+  // Responses table) instead of just one table, per the user's explicit request. Kept as entirely
+  // separate state from the Report tab's missing*/report* variables above — the two filter bars
+  // are independent (picking a BU here does not affect the Report tab's own BU filter or vice
+  // versa). See render()'s "Dashboard filter bar" section for how these are applied (a join
+  // against the Phone Book by email, since Member rows themselves don't carry BU/Department/Job
+  // Title — only the Phone Book does).
+  let dashBuFilter = null;
+  let dashDeptFilter = null;
+  let dashStatusFilter = null; // null (all) | "responded" | "missing"
+  let dashTypeFilter = null; // null (all) | "management" | "staff"
+  let dashBucketFilter = null; // null (all) | bucket-start minute (number, e.g. 0, 15, 30...)
   const $ = id => document.getElementById(id);
   const show = (id, visible=true) => $(id).classList.toggle("hidden", !visible);
   const clean = value => String(value ?? "").trim();
@@ -195,9 +208,14 @@
     }).join("");
     if (refs.includes(previous)) select.value=previous;
   }
-  function render() {
-    // Scope changed (RefID filter / refresh) — any chart-click table filter, column filters,
-    // and page position from before no longer apply to the new data, so drop them all.
+  // Drops every per-table/per-view filter state back to "no filter" — chart-click table filter,
+  // column filters, page position, the Report tab's 5 filters, and the Dashboard's own 5 filters
+  // (added 2026-09-25) — plus resets every filter <select>/<input> in the DOM to match. Called
+  // when the DATA SCOPE itself changes (RefID filter change, Refresh) — a filter selection made
+  // against the old scope may not even make sense against the new one. Deliberately NOT called
+  // from render() itself (that used to reset everything on every call) or from any individual
+  // filter dropdown's own change handler — picking one filter should never clear the others.
+  function resetAllFilters() {
     activeFilter=null;
     columnFilters={id:"", refid:"", email:"", created:"", status:"", drill:""};
     document.querySelectorAll(".col-filter").forEach(input=>{ input.value=""; });
@@ -208,9 +226,17 @@
     reportTypeFilter=null;
     reportBucketFilter=null;
     missingPage=1;
-    ["missingBuFilterSelect","missingDeptFilterSelect","missingStatusFilter","missingTypeFilterSelect","missingBucketFilterSelect"].forEach(id=>{
+    dashBuFilter=null;
+    dashDeptFilter=null;
+    dashStatusFilter=null;
+    dashTypeFilter=null;
+    dashBucketFilter=null;
+    ["missingBuFilterSelect","missingDeptFilterSelect","missingStatusFilter","missingTypeFilterSelect","missingBucketFilterSelect",
+     "dashBuFilterSelect","dashDeptFilterSelect","dashStatusFilterSelect","dashTypeFilterSelect","dashBucketFilterSelect"].forEach(id=>{
       const el=$(id); if (el) el.value="";
     });
+  }
+  function render() {
     const ref=$("refFilter").value;
     const scoped=ref === "all" ? allRows : allRows.filter(r=>clean(r.RefID)===ref);
     // Exclude the Admin announcement row (has Mode/iMsg) from every metric and the table — only member responses stay.
@@ -224,42 +250,23 @@
     if (scoped.length && rows.length===scoped.length) {
       console.warn(`[CallTree Dashboard] RefID=${ref}: ไม่มีแถวใดถูกตัดออกเลย — ถ้าคาดว่าควรมีรายการแจ้งเหตุการณ์ถูกกรองออก ให้ตรวจสอบค่า Mode/iMsg ของ List ใน SharePoint โดยตรง`);
     }
-    // Safe / Responded now count unique employees (by email), not raw rows — one member can
-    // appear on multiple rows for the same RefID (re-submits, drill + safe-check, etc.).
     const emailOf=r=>clean(r.EMail).toLowerCase();
-    const safeEmails=new Set(rows.filter(isSafe).map(emailOf).filter(Boolean));
-    // "Responded" = every unique email with at least one member row — NOT filtered through
-    // hasResponse() (ClickDateTime/ResponseSafe/DrillResponse). Bug fixed 2026-09-22: for some
-    // Modes (e.g. "ActivateCallTree", confirmed via RefID 645 screenshot: 4 rows / 3 unique
-    // emails, all with ResponseSafe and DrillResponse blank) those three fields are legitimately
-    // blank on every member row for that Mode, so hasResponse() was always false and Responded
-    // showed 0 even though the rows themselves ARE the responses. `rows` already excludes the
-    // Admin/notification row (see isNotificationRow above), so anything left in it with an EMail
-    // is by construction a real member response — same "the row's existence is the signal"
-    // reasoning already used for the 15-minute histogram (which is why the histogram was already
-    // showing the correct count of 3 for RefID 645 while this KPI wrongly showed 0).
-    const respondedEmails=new Set(rows.map(emailOf).filter(Boolean));
-    const safe=safeEmails.size;
-    const responded=respondedEmails.size;
+
     // Reference time for "how long did this member take to respond" is the Admin/notification
     // row's own Created (the moment the event was announced) for that RefID — NOT each member
-    // row's ClickDateTime, which is unreliable/blank in this list. Each member response row's own
-    // Created is when THAT member's response was recorded (see Latest Responses table's "Created"
-    // column), so elapsed = memberRow.Created − adminRow.Created for the same RefID. (Moved up
-    // 2026-09-24, was further below — needed earlier now to compute each report row's response
-    // time/15-minute bucket alongside allMasterRows below.)
+    // row's ClickDateTime, which is unreliable/blank in this list.
     const adminCreatedByRef={};
     scoped.forEach(r=>{
       if (!isNotificationRow(r) || !r.Created) return;
       const key=clean(r.RefID)||"Unknown";
       if (!adminCreatedByRef[key]) adminCreatedByRef[key]=new Date(r.Created);
     });
-    // "เวลาที่ตอบรับ" (added 2026-09-24) for the Phone Book report table: each person's EARLIEST
-    // response Created time within the current RefID scope (same "earliest wins, unique person"
-    // logic as the Dashboard's response-time histogram below, but keyed by email only — one
-    // Report row per master-list person, not per RefID). Under "All RefID" this is their overall
-    // first-ever response's own timestamp (and that response's own RefID, for bucketing against
-    // ITS admin announcement time) — same aggregation caveat as respondedEmails above.
+    // Each person's EARLIEST response Created time within the current RefID scope, plus the
+    // resulting 15-minute bucket (responseBucketByEmail) — computed ONCE here (unaffected by any
+    // filter, since it's intrinsic to when the person actually responded) and reused by: the
+    // Report tab's "เวลาที่ตอบรับ" column/filter (allMasterRows below), and the Dashboard's own
+    // "จำนวนผู้ตอบตามช่วงเวลา 15 นาที" filter (added 2026-09-25, see the dashboard filter-bar
+    // section below).
     const earliestResponseByEmail={};
     rows.forEach(r=>{
       const email=emailOf(r);
@@ -269,10 +276,16 @@
         earliestResponseByEmail[email]={time:t, ref:clean(r.RefID)||"Unknown"};
       }
     });
-    // Master (Phone Book) list — moved up from further below (2026-09-24) because "Total
-    // Records" and the Response Status doughnut's "Pending Employer" now both depend on it, per
-    // the user's explicit request. Dedupe the Phone Book itself by email first (keep the first
-    // row per email) in case the same person has more than one row there.
+    const responseBucketByEmail={};
+    Object.entries(earliestResponseByEmail).forEach(([email,resp])=>{
+      const adminTime=adminCreatedByRef[resp.ref];
+      if (!adminTime) return;
+      const mins=(resp.time-adminTime)/60000;
+      if (Number.isFinite(mins) && mins>=0) responseBucketByEmail[email]=Math.floor(mins/15)*15;
+    });
+
+    // Master (Phone Book) list. Dedupe by email first (keep the first row per email) in case the
+    // same person has more than one row there.
     const phoneBookByEmail={};
     allPhoneBook.forEach(p=>{
       const email=clean(p.Email).toLowerCase();
@@ -280,55 +293,94 @@
       phoneBookByEmail[email]=p;
     });
     const phoneBookEmails=Object.keys(phoneBookByEmail);
-    // "ยังไม่แจ้งเหตุ" (has not reported at all) = every unique email in the master list that is
-    // NOT in respondedEmails (already scoped to the current RefID filter, same as everything
-    // else in this function).
-    const missingRows=phoneBookEmails.filter(e=>!respondedEmails.has(e)).map(e=>phoneBookByEmail[e]);
-    // "รายงานผู้ที่ยังไม่ตอบรับ/ตอบรับ" table (widened 2026-09-24, was missingRows only) — EVERY
-    // master-list person, tagged with whether they're in respondedEmails, so the tab's own
-    // ตอบ/ไม่ตอบ filter and status column can show either or both. `missingRows` above (the
-    // not-yet-responded subset) is still computed as-is for kpiMissing/kpiTotal/pending/the
-    // doughnut's "Pending Employer" — this is a separate, additional array just for this table.
-    // ResponseTime/ResponseBucket (added 2026-09-24) come from earliestResponseByEmail above —
-    // ResponseBucket is null unless BOTH a response time AND that response's RefID's admin
-    // announcement time are known (same requirement as the Dashboard histogram).
-    const allMasterRows=phoneBookEmails.map(e=>{
-      const resp=earliestResponseByEmail[e];
-      let bucket=null;
-      if (resp) {
-        const adminTime=adminCreatedByRef[resp.ref];
-        if (adminTime) {
-          const mins=(resp.time-adminTime)/60000;
-          if (Number.isFinite(mins) && mins>=0) bucket=Math.floor(mins/15)*15;
-        }
+
+    // TRUE (unfiltered) responded set — every unique email with at least one member row in the
+    // current RefID scope. NOT filtered through hasResponse() (ClickDateTime/ResponseSafe/
+    // DrillResponse are legitimately blank for some Modes — see the notes doc's row-types
+    // section). This is what the Report tab and the Dashboard filter bar's own ตอบ/ไม่ตอบ filter
+    // (below) both check against.
+    const respondedEmailsAll=new Set(rows.map(emailOf).filter(Boolean));
+
+    // ---- Dashboard filter bar (BU / Department / ตอบ-ไม่ตอบ / Type / 15-minute bucket, added
+    // 2026-09-25) — same 5 filters as the "รายงานผู้ที่ยังตอบรับ" tab's filter bar, but this one
+    // scopes the WHOLE Dashboard view (every KPI card, both charts, and the Latest Responses
+    // table), per the user's explicit request, instead of just one table. BU/Department/Job
+    // Title live on the Phone Book, not the Member list, so matching them means joining each
+    // Member row's email against phoneBookByEmail.
+    function passesDashFilters(email) {
+      if (dashBuFilter || dashDeptFilter || dashTypeFilter) {
+        const pb=phoneBookByEmail[email];
+        // A responder who isn't in the Phone Book has no BU/Department/Job Title to check
+        // against — excluded whenever any of these 3 filters is active. If a known responder
+        // unexpectedly disappears from the Dashboard after picking a BU/Department/Type, this is
+        // why — check whether their email actually exists in the Phone Book list.
+        if (!pb) return false;
+        if (dashBuFilter && (clean(pb.BU)||"ไม่ระบุ BU")!==dashBuFilter) return false;
+        if (dashDeptFilter && (clean(pb.Department)||"ไม่ระบุ Department")!==dashDeptFilter) return false;
+        if (dashTypeFilter && classifyJobType(pb.JobTitle)!==dashTypeFilter) return false;
       }
-      return {...phoneBookByEmail[e], Responded:respondedEmails.has(e), ResponseTime:resp?resp.time:null, ResponseBucket:bucket};
-    });
+      if (dashStatusFilter) {
+        const responded=respondedEmailsAll.has(email);
+        if (dashStatusFilter==="responded" && !responded) return false;
+        if (dashStatusFilter==="missing" && responded) return false;
+      }
+      if (dashBucketFilter!==null && responseBucketByEmail[email]!==dashBucketFilter) return false;
+      return true;
+    }
+    // dashRows = Member response rows for an email that passes the filter bar above — feeds
+    // Safe/พนักงานที่ตอบทั้งหมด/% ผู้ที่ตอบผิด/the Response Status doughnut/the 15-minute
+    // histogram/the Latest Responses table. dashPhoneBookEmails = master-list emails passing the
+    // same filter — feeds Total Records/ยังไม่ตอบ/Pending/"Pending Employer". Both replace `rows`/
+    // `phoneBookEmails` everywhere BELOW this point — the Report tab (currentReportRows/
+    // allMasterRows, built next) intentionally stays UNFILTERED by this bar, since it has its own
+    // separate filter bar and the user's request was specifically about the Dashboard ("หน้าแรก").
+    const dashRows=rows.filter(r=>passesDashFilters(emailOf(r)));
+    const dashPhoneBookEmails=phoneBookEmails.filter(passesDashFilters);
+    // ------------------------------------------------------------------------------------------
+
+    // Safe / Responded count unique employees (by email) within the dash-filtered scope, not raw
+    // rows — one member can appear on multiple rows for the same RefID (re-submits, drill +
+    // safe-check, etc.).
+    const safeEmails=new Set(dashRows.filter(isSafe).map(emailOf).filter(Boolean));
+    const respondedEmails=new Set(dashRows.map(emailOf).filter(Boolean));
+    const safe=safeEmails.size;
+    const responded=respondedEmails.size;
+
+    // "ยังไม่แจ้งเหตุ" (has not reported at all), within the dash-filtered master-list scope.
+    const missingRows=dashPhoneBookEmails.filter(e=>!respondedEmailsAll.has(e)).map(e=>phoneBookByEmail[e]);
+
+    // "รายงานผู้ที่ยังไม่ตอบรับ/ตอบรับ" (Report tab) data — EVERY master-list person, UNFILTERED
+    // by the Dashboard's own filter bar above (see the note there).
+    const allMasterRows=phoneBookEmails.map(e=>({
+      ...phoneBookByEmail[e],
+      Responded:respondedEmailsAll.has(e),
+      ResponseTime:earliestResponseByEmail[e]?earliestResponseByEmail[e].time:null,
+      ResponseBucket:responseBucketByEmail[e] ?? null,
+    }));
     currentReportRows=allMasterRows;
     currentPhoneBookTotal=phoneBookEmails.length;
-    // Show "–" (not "0") when the Phone Book hasn't loaded at all, so a genuine "everyone
-    // responded" (0 missing, Phone Book loaded fine) is never confused with "no master data".
+    // Show "–" (not "0") when the Phone Book hasn't loaded at all, so a genuine "0 after
+    // filtering" is never confused with "no master data".
     $("kpiMissing").textContent=phoneBookEmails.length ? missingRows.length.toLocaleString("th-TH") : "–";
-    // "Pending" (fixed 2026-09-24, was Math.max(rows.length-responded,0) — mixed a row-count
-    // with a people-count, which is why the kpiPending card was hidden in the first place, see
-    // the KPI-semantics notes) = master employees who have not reported at all. Same set as
-    // `missingRows` above — reusing it keeps the doughnut's "Pending Employer" slice, the
-    // kpiPending KPI (still hidden), and the "รายงานผู้ที่ยังตอบรับ" tab all in agreement.
+    // "Pending" = dash-filtered master employees who have not reported at all — same set as
+    // `missingRows` above, so the doughnut's "Pending Employer" slice, the kpiPending KPI (still
+    // hidden), and this number all agree by construction.
     const pending=missingRows.length;
     // Pseudo-rows so clicking "Pending Employer" can list people in the Latest Responses table
-    // who have NO row there at all (they never submitted anything) — only Email is real; every
-    // other column is blank ("-") since there is no response to show. `rowColumnText()` and
-    // `renderTable()` already handle blank ResponseSafe/HelpNote/DrillResponse/Created/RefID
-    // gracefully (existing "||'-'" fallbacks), so no changes were needed there.
+    // who have NO row there at all (they never submitted anything) — built from the dash-filtered
+    // missingRows, so it respects the filter bar too. Only Email is real; every other column is
+    // blank ("-") — the existing "||'-'" fallbacks in rowColumnText()/renderTable() already
+    // handle that.
     const pendingMasterRows=missingRows.map(p=>({
       ID:`PB-${p.Email}`, RefID:"", EMail:p.Email, Created:null, ResponseSafe:"", HelpNote:"", DrillResponse:"",
     }));
-    const help=rows.filter(r=>clean(r.HelpNote) || clean(r.ResponseSafe).toLowerCase()==="seehelpnote").length;
+    const help=dashRows.filter(r=>clean(r.HelpNote) || clean(r.ResponseSafe).toLowerCase()==="seehelpnote").length;
     // "% ผู้ที่ตอบผิด": compare each RefID's Admin announcement text (iMsg) against each member's
-    // Drill Response. Counted per UNIQUE email — if a person answered more than once, only their
-    // FIRST Drill Response (by earliest Created, among rows that actually have a Drill Response) is
-    // used. A blank Drill Response means the member never answered the drill question, so they are
-    // excluded from both the numerator and denominator (not counted as "wrong").
+    // Drill Response, within the dash-filtered scope (dashRows). Counted per UNIQUE email — if a
+    // person answered more than once, only their FIRST Drill Response (by earliest Created,
+    // among rows that actually have a Drill Response) is used. A blank Drill Response means the
+    // member never answered the drill question, so they are excluded from both the numerator and
+    // denominator (not counted as "wrong").
     const adminIMsgByRef={};
     scoped.forEach(r=>{
       if (!isNotificationRow(r)) return;
@@ -336,7 +388,7 @@
       if (!(key in adminIMsgByRef)) adminIMsgByRef[key]=fieldText(r.iMsg).trim();
     });
     const firstDrillByRefEmail={};
-    rows.forEach(r=>{
+    dashRows.forEach(r=>{
       const drill=fieldText(r.DrillResponse).trim();
       const email=emailOf(r);
       if (!drill || !email || !r.Created) return;
@@ -349,12 +401,9 @@
     const drillEntries=Object.values(firstDrillByRefEmail).filter(({ref})=>adminIMsgByRef[ref]!==undefined);
     const wrongCount=drillEntries.filter(({drill,ref})=>drill!==adminIMsgByRef[ref]).length;
     const wrongPct=drillEntries.length ? (wrongCount/drillEntries.length*100) : 0;
-    // "Total Records" (changed 2026-09-24, was rows.length — a row count of Member responses)
-    // now shows the Phone Book master headcount instead, per the user's explicit request. This
-    // is a genuine meaning change: it used to answer "how many response rows exist", it now
-    // answers "how many employees are in the master list" — "–" (not "0") if Phone Book hasn't
-    // loaded, same reasoning as kpiMissing above.
-    $("kpiTotal").textContent=phoneBookEmails.length ? phoneBookEmails.length.toLocaleString("th-TH") : "–";
+    // "Total Records" shows the (dash-filtered) Phone Book master headcount — "–" (not "0") if
+    // Phone Book hasn't loaded, same reasoning as kpiMissing above.
+    $("kpiTotal").textContent=phoneBookEmails.length ? dashPhoneBookEmails.length.toLocaleString("th-TH") : "–";
     $("kpiSafe").textContent=safe.toLocaleString("th-TH");
     $("kpiResponded").textContent=responded.toLocaleString("th-TH");
     $("kpiPending").textContent=pending.toLocaleString("th-TH");
@@ -402,12 +451,12 @@
       renderTable();
     }}});
 
-    // Response-time histogram: count UNIQUE emails, not rows. A member with multiple response
-    // rows for the same RefID is counted once, using the EARLIEST of their own Created times as
-    // their response moment — bucketed against the Admin row's Created for that RefID, in
-    // 15-minute buckets from 0.
+    // Response-time histogram: count UNIQUE emails within the dash-filtered scope (dashRows), not
+    // raw rows. A member with multiple response rows for the same RefID is counted once, using
+    // the EARLIEST of their own Created times as their response moment — bucketed against the
+    // Admin row's Created for that RefID, in 15-minute buckets from 0.
     const earliestByRefEmail={};
-    rows.forEach(r=>{
+    dashRows.forEach(r=>{
       const email=emailOf(r);
       const key=(clean(r.RefID)||"Unknown")+"|"+email;
       if (!email || !r.Created) return;
@@ -447,7 +496,9 @@
 
     populateReportFilterSelects(allMasterRows);
     renderMissingChart();
-    currentRows=rows;
+    populateDashFilterSelects(allMasterRows);
+    show("clearDashAllFiltersButton", Boolean(dashBuFilter||dashDeptFilter||dashStatusFilter||dashTypeFilter||dashBucketFilter!==null));
+    currentRows=dashRows;
     renderTable();
     renderMissingTable();
   }
@@ -523,6 +574,32 @@
     } else if (prevDept) {
       deptSelect.value="";
       missingDeptFilter=null;
+    }
+    if (bucketValues.some(b=>String(b)===prevBucket)) bucketSelect.value=prevBucket;
+  }
+  // Populates the Dashboard's OWN BU / Department / 15-minute-bucket filter dropdowns (added
+  // 2026-09-25) — same pattern/cascading behavior as populateReportFilterSelects() above (BU's
+  // option list is always full; Department's option list is scoped to whichever BU is currently
+  // selected, dashBuFilter, and the previous Department selection is cleared if it no longer fits
+  // the new scope), but reading dashBu*/dashDept* state and writing to the dash*Select> elements
+  // instead of the Report tab's. Always called with the FULL (unfiltered) allMasterRows — Type/
+  // ตอบ-ไม่ตอบ never narrow BU/Department's own option lists, only BU narrows Department's.
+  function populateDashFilterSelects(rows) {
+    const buSelect=$("dashBuFilterSelect"), deptSelect=$("dashDeptFilterSelect"), bucketSelect=$("dashBucketFilterSelect");
+    const buValues=[...new Set(rows.map(p=>clean(p.BU)||"ไม่ระบุ BU"))].sort((a,b)=>a.localeCompare(b));
+    const deptScope = dashBuFilter ? rows.filter(p=>(clean(p.BU)||"ไม่ระบุ BU")===dashBuFilter) : rows;
+    const deptValues=[...new Set(deptScope.map(p=>clean(p.Department)||"ไม่ระบุ Department"))].sort((a,b)=>a.localeCompare(b));
+    const bucketValues=[...new Set(rows.map(p=>p.ResponseBucket).filter(b=>b!==null&&b!==undefined))].sort((a,b)=>a-b);
+    const prevBu=buSelect.value, prevDept=deptSelect.value, prevBucket=bucketSelect.value;
+    buSelect.innerHTML='<option value="">ทั้งหมด</option>'+buValues.map(v=>`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+    deptSelect.innerHTML='<option value="">ทั้งหมด</option>'+deptValues.map(v=>`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+    bucketSelect.innerHTML='<option value="">ทั้งหมด</option>'+bucketValues.map(b=>`<option value="${b}">${b}–${b+15} นาที</option>`).join("");
+    if (buValues.includes(prevBu)) buSelect.value=prevBu;
+    if (deptValues.includes(prevDept)) {
+      deptSelect.value=prevDept;
+    } else if (prevDept) {
+      deptSelect.value="";
+      dashDeptFilter=null;
     }
     if (bucketValues.some(b=>String(b)===prevBucket)) bucketSelect.value=prevBucket;
   }
@@ -713,6 +790,7 @@
         setMessage(`โหลด Phone Book (Master List) ไม่สำเร็จ: ${pbError.message||pbError} — ข้อมูล Response อื่นใช้งานได้ตามปกติ แต่ KPI/กราฟ/ตาราง "ยังไม่ตอบ" จะไม่แสดงผล`, "error");
       }
       fillRefFilter(allRows);
+      resetAllFilters();
       render();
       show("content",true);
     }
@@ -760,7 +838,7 @@
   $("loginButton").addEventListener("click",login);
   $("refreshButton").addEventListener("click",loadData);
   $("logoutButton").addEventListener("click",()=>{ if(msalApp) msalApp.logoutPopup({mainWindowRedirectUri:cfg.redirectUri}); });
-  $("refFilter").addEventListener("change",render);
+  $("refFilter").addEventListener("change", ()=>{ resetAllFilters(); render(); });
   document.querySelectorAll(".col-filter").forEach(input=>{
     input.addEventListener("input", ()=>{
       columnFilters[input.dataset.col]=input.value.trim().toLowerCase();
@@ -801,5 +879,20 @@
   });
   $("missingPrevPageButton").addEventListener("click", ()=>{ missingPage=Math.max(1,missingPage-1); renderMissingTable(); });
   $("missingNextPageButton").addEventListener("click", ()=>{ missingPage=missingPage+1; renderMissingTable(); });
+  // Dashboard's own filter bar (added 2026-09-25) — every change re-runs the FULL render() (not
+  // a narrow renderX() like the Report tab's filters use) because these 5 filters touch every
+  // KPI card and both charts, not just one table. resetAllFilters() is deliberately NOT called
+  // here — picking one Dashboard filter must not clear the others, or the Report tab's filters.
+  $("dashBuFilterSelect").addEventListener("change", e=>{ dashBuFilter=e.target.value||null; currentPage=1; render(); });
+  $("dashDeptFilterSelect").addEventListener("change", e=>{ dashDeptFilter=e.target.value||null; currentPage=1; render(); });
+  $("dashStatusFilterSelect").addEventListener("change", e=>{ dashStatusFilter=e.target.value||null; currentPage=1; render(); });
+  $("dashTypeFilterSelect").addEventListener("change", e=>{ dashTypeFilter=e.target.value||null; currentPage=1; render(); });
+  $("dashBucketFilterSelect").addEventListener("change", e=>{ dashBucketFilter=e.target.value===""?null:Number(e.target.value); currentPage=1; render(); });
+  $("clearDashAllFiltersButton").addEventListener("click", ()=>{
+    dashBuFilter=null; dashDeptFilter=null; dashStatusFilter=null; dashTypeFilter=null; dashBucketFilter=null;
+    currentPage=1;
+    ["dashBuFilterSelect","dashDeptFilterSelect","dashStatusFilterSelect","dashTypeFilterSelect","dashBucketFilterSelect"].forEach(id=>{ $(id).value=""; });
+    render();
+  });
   window.addEventListener("DOMContentLoaded",init);
 })();
