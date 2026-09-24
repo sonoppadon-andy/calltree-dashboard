@@ -9,7 +9,7 @@
        layer of defense in case any script here is ever compromised (e.g. supply-chain attack on
        one of the CDN libraries below). Keep this in sync whenever a new external host is added. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self'; connect-src 'self' https://graph.microsoft.com https://login.microsoftonline.com https://cdn.jsdelivr.net; img-src 'self' data:; frame-src https://login.microsoftonline.com; object-src 'none'; base-uri 'self'; form-action 'self'">
-  <link rel="stylesheet" href="styles.css?v=20260924e">
+  <link rel="stylesheet" href="styles.css?v=20260924f">
   <!-- SECURITY (added 2026-09-23): Subresource Integrity (SRI) on every third-party script.
        Without `integrity`, a compromised CDN file would run with full access to this page's
        MSAL access token (in sessionStorage) and the whole SharePoint "Member" list. The browser
@@ -27,8 +27,8 @@
     integrity="sha384-zYPBGXwO4633CABX/5Spf6emCKUJCfoOkhOMYyxMsatqQZPnDblmmOewfjsIVWCM" crossorigin="anonymous"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"
     integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw" crossorigin="anonymous"></script>
-  <script defer src="config.js?v=20260924e"></script>
-  <script defer src="app.js?v=20260924e"></script>
+  <script defer src="config.js?v=20260924f"></script>
+  <script defer src="app.js?v=20260924f"></script>
 </head>
 <body>
   <div id="loginView" class="login-page">
@@ -150,12 +150,16 @@
                 <option value="staff">Staff</option>
               </select>
             </div>
+            <div class="filter-field">
+              <label for="missingBucketFilterSelect">จำนวนผู้ตอบตามช่วงเวลา 15 นาที</label>
+              <select id="missingBucketFilterSelect"><option value="">ทั้งหมด</option></select>
+            </div>
             <button id="clearMissingAllFiltersButton" class="outline small hidden">ล้างตัวกรองทั้งหมด</button>
           </div>
           <div class="chart-box missing-chart-box"><canvas id="missingChart"></canvas></div>
           <div class="table-wrap missing-table-wrap">
             <table>
-              <thead><tr><th>Email</th><th>BU</th><th>Division (สายงาน)</th><th>Job Title</th><th>Department</th><th>สถานะ</th></tr></thead>
+              <thead><tr><th>Email</th><th>BU</th><th>Division (สายงาน)</th><th>Job Title</th><th>Department</th><th>สถานะ</th><th>เวลาที่ตอบรับ</th></tr></thead>
               <tbody id="missingTable"></tbody>
             </table>
           </div>
