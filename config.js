@@ -17,6 +17,6 @@ window.CALLTREE_CONFIG = {
   phoneBook: {
     sitePath: "/sites/snet",
     listName: "Phone Book",
-    fields: { email: "field_15", bu: "field_16", division: "field_14", jobTitle: "field_10" }
+    fields: { email: "field_15", bu: "field_16", division: "field_14", jobTitle: "field_10", department: "field_12" }
   }
 };
