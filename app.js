@@ -314,13 +314,34 @@
     // responded" (0 missing, Phone Book loaded fine) is never confused with "no master data".
     $("kpiMissing").textContent=phoneBookEmails.length ? missingRows.length.toLocaleString("th-TH") : "–";
 
+    // Both series (responded vs. not-yet-responded) grouped by BU, so the two counts sit on the
+    // same categories for easy comparison — per the user's explicit request (2026-09-23).
+    // "Responded" here means "in the Phone Book AND has a response in the current RefID scope" —
+    // a different (smaller-or-equal) population than the kpiResponded KPI, which doesn't require
+    // Phone Book membership. A person who responded but isn't in the Phone Book master list is
+    // invisible to this chart (no BU to group them by) — flag this to the user if the two totals
+    // are ever compared and don't match.
+    const respondedByBU={};
     const missingByBU={};
-    missingRows.forEach(p=>{ const bu=clean(p.BU)||"ไม่ระบุ BU"; missingByBU[bu]=(missingByBU[bu]||0)+1; });
-    const buLabels=Object.keys(missingByBU).sort((a,b)=>missingByBU[b]-missingByBU[a]);
-    const buData=buLabels.map(b=>missingByBU[b]);
+    phoneBookEmails.forEach(e=>{
+      const bu=clean(phoneBookByEmail[e].BU)||"ไม่ระบุ BU";
+      if (respondedEmails.has(e)) respondedByBU[bu]=(respondedByBU[bu]||0)+1;
+      else missingByBU[bu]=(missingByBU[bu]||0)+1;
+    });
+    const buLabels=[...new Set([...Object.keys(respondedByBU), ...Object.keys(missingByBU)])]
+      .sort((a,b)=>((respondedByBU[b]||0)+(missingByBU[b]||0)) - ((respondedByBU[a]||0)+(missingByBU[a]||0)));
+    const respondedData=buLabels.map(b=>respondedByBU[b]||0);
+    const missingData=buLabels.map(b=>missingByBU[b]||0);
     if(missingChart) missingChart.destroy();
-    missingChart=new Chart($("missingChart"),{type:"bar",data:{labels:buLabels,datasets:[{label:"ยังไม่ตอบ",data:buData,backgroundColor:"#0e7490",borderRadius:4,maxBarThickness:28}]},options:{indexAxis:"y",responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:item=>`${item.parsed.x.toLocaleString('th-TH')} คน`}}},scales:{x:{beginAtZero:true,ticks:{precision:0}},y:{grid:{display:false}}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
+    missingChart=new Chart($("missingChart"),{type:"bar",data:{labels:buLabels,datasets:[
+      {label:"ตอบรับแล้ว",data:respondedData,backgroundColor:"#16845b",borderRadius:4,maxBarThickness:22},
+      {label:"ยังไม่ตอบรับ",data:missingData,backgroundColor:"#0e7490",borderRadius:4,maxBarThickness:22},
+    ]},options:{indexAxis:"y",responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"bottom"},tooltip:{callbacks:{label:item=>`${item.dataset.label}: ${item.parsed.x.toLocaleString('th-TH')} คน`}}},scales:{x:{beginAtZero:true,ticks:{precision:0}},y:{grid:{display:false}}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
       if (!elements.length) return;
+      // Both datasets share the same category (BU) labels, so any bar clicked in either series
+      // resolves to the same BU via its category index — the table filter always shows that BU's
+      // "ยังไม่ตอบรับ" list (clicking a "ตอบรับแล้ว" bar filters the not-yet-responded table to
+      // that BU too, which can legitimately come back empty if everyone in that BU responded).
       const bu=buLabels[elements[0].index];
       missingBuFilter=(missingBuFilter===bu) ? null : bu;
       renderMissingTable();
@@ -502,6 +523,23 @@
       $("configMessage").textContent=error.message || "เกิดข้อผิดพลาดระหว่างเริ่มต้นระบบเข้าสู่ระบบ";
     }
   }
+  // Top-level menu: "Dashboard" (KPIs/status/histogram/Latest Responses) vs. "รายงานผู้ที่ยัง
+  // ตอบรับ" (the responded-vs-not-responded BU chart + table, moved into its own menu item per
+  // the user's request 2026-09-23). Both views read the same allRows/allPhoneBook and are kept
+  // in sync by the same render() call regardless of which one is visible — switching tabs never
+  // re-fetches or re-renders data, it only toggles which <div> is shown.
+  function showView(view) {
+    show("viewDashboard", view==="dashboard");
+    show("viewReport", view==="report");
+    $("navDashboard").classList.toggle("active", view==="dashboard");
+    $("navReport").classList.toggle("active", view==="report");
+    // Chart.js sizes a canvas from its container at creation time. missingChart is (re)built by
+    // render() even while viewReport is hidden (display:none → 0×0), so it must be told to
+    // recalculate its size once the container actually becomes visible, or it stays blank/tiny.
+    if (view==="report" && missingChart) missingChart.resize();
+  }
+  $("navDashboard").addEventListener("click", ()=>showView("dashboard"));
+  $("navReport").addEventListener("click", ()=>showView("report"));
   $("loginButton").addEventListener("click",login);
   $("refreshButton").addEventListener("click",loadData);
   $("logoutButton").addEventListener("click",()=>{ if(msalApp) msalApp.logoutPopup({mainWindowRedirectUri:cfg.redirectUri}); });
