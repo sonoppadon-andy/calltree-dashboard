@@ -25,13 +25,16 @@
   // EVERY master-list person (not just the not-yet-responded ones — widened 2026-09-24 to
   // support the ตอบ/ไม่ตอบ status filter/column below), each tagged with a `Responded`
   // boolean; currentPhoneBookTotal is the master headcount. Both are (re)filled on every
-  // render(). Five filters combine (AND) to filter the table: missingBuFilter (BU — driven by
-  // BOTH the #missingBuFilterSelect dropdown and clicking a missingChart bar, added 2026-09-24
-  // as the filter-bar section, kept in sync both ways), missingDeptFilter (Department dropdown,
-  // added 2026-09-24), reportStatusFilter (ตอบ/ไม่ตอบ dropdown), reportTypeFilter (Type
-  // dropdown, added 2026-09-24 — see classifyJobType() below), and reportBucketFilter (จำนวนผู้
-  // ตอบตามช่วงเวลา 15 นาที dropdown, added 2026-09-24 — matches each report row's
-  // `ResponseBucket`, see the ResponseTime/ResponseBucket computation in render()). missingPage
+  // render(). Five filters combine (AND) to filter the table: missingBuFilter (BU dropdown,
+  // added 2026-09-24 as the filter-bar section — cascades into Department's own options via
+  // populateReportFilterSelects() and rescopes missingChart, both updated 2026-09-24),
+  // missingDeptFilter (Department dropdown — driven by BOTH the #missingDeptFilterSelect
+  // dropdown and clicking a missingChart bar as of 2026-09-24 when the chart switched from
+  // BU-grouped to Department-grouped, kept in sync both ways), reportStatusFilter (ตอบ/ไม่ตอบ
+  // dropdown), reportTypeFilter (Type dropdown, added 2026-09-24 — see classifyJobType()
+  // below), and reportBucketFilter (จำนวนผู้ตอบตามช่วงเวลา 15 นาที dropdown, added 2026-09-24 —
+  // matches each report row's `ResponseBucket`, see the ResponseTime/ResponseBucket computation
+  // in render()). missingPage
   // (same PAGE_SIZE as the Member table) paginates the result. All of these only call
   // renderMissingTable() (never render()), same pattern as the Member table's
   // activeFilter/columnFilters/currentPage.
@@ -442,46 +445,56 @@
       renderTable();
     }}});
 
-    // Both series (responded vs. not-yet-responded) grouped by BU, so the two counts sit on the
-    // same categories for easy comparison — per the user's explicit request (2026-09-23).
-    // "Responded" here means "in the Phone Book AND has a response in the current RefID scope" —
-    // a different (smaller-or-equal) population than the kpiResponded KPI, which doesn't require
-    // Phone Book membership. A person who responded but isn't in the Phone Book master list is
-    // invisible to this chart (no BU to group them by) — flag this to the user if the two totals
-    // are ever compared and don't match.
-    const respondedByBU={};
-    const missingByBU={};
-    phoneBookEmails.forEach(e=>{
-      const bu=clean(phoneBookByEmail[e].BU)||"ไม่ระบุ BU";
-      if (respondedEmails.has(e)) respondedByBU[bu]=(respondedByBU[bu]||0)+1;
-      else missingByBU[bu]=(missingByBU[bu]||0)+1;
+    populateReportFilterSelects(allMasterRows);
+    renderMissingChart();
+    currentRows=rows;
+    renderTable();
+    renderMissingTable();
+  }
+  // Builds/rebuilds missingChart: both series (responded vs. not-yet-responded) grouped by
+  // Department (changed 2026-09-24, was grouped by BU) so the two counts sit on the same
+  // categories for easy comparison — per the user's explicit request. Reads directly from
+  // currentReportRows (already tagged BU/Department/Responded per person) rather than the
+  // render()-local phoneBookEmails/respondedEmails/etc., so it can be called on its own —
+  // NOT just from render() — whenever missingBuFilter changes, since the chart is now scoped
+  // to the currently selected BU (cascading, added 2026-09-24, same day): pick a BU and the
+  // chart narrows to that BU's Department breakdown instead of showing every Department in
+  // the whole Master list at once (which could be dozens of bars — see the notes doc for why).
+  // "Responded" here means "in the Phone Book AND has a response in the current RefID scope" —
+  // a different (smaller-or-equal) population than the kpiResponded KPI, which doesn't require
+  // Phone Book membership.
+  function renderMissingChart() {
+    let rowsForChart=currentReportRows;
+    if (missingBuFilter) rowsForChart=rowsForChart.filter(p=>(clean(p.BU)||"ไม่ระบุ BU")===missingBuFilter);
+    const respondedByDept={};
+    const missingByDept={};
+    rowsForChart.forEach(p=>{
+      const dept=clean(p.Department)||"ไม่ระบุ Department";
+      if (p.Responded) respondedByDept[dept]=(respondedByDept[dept]||0)+1;
+      else missingByDept[dept]=(missingByDept[dept]||0)+1;
     });
-    const buLabels=[...new Set([...Object.keys(respondedByBU), ...Object.keys(missingByBU)])]
-      .sort((a,b)=>((respondedByBU[b]||0)+(missingByBU[b]||0)) - ((respondedByBU[a]||0)+(missingByBU[a]||0)));
-    const respondedData=buLabels.map(b=>respondedByBU[b]||0);
-    const missingData=buLabels.map(b=>missingByBU[b]||0);
+    const deptLabels=[...new Set([...Object.keys(respondedByDept), ...Object.keys(missingByDept)])]
+      .sort((a,b)=>((respondedByDept[b]||0)+(missingByDept[b]||0)) - ((respondedByDept[a]||0)+(missingByDept[a]||0)));
+    const respondedData=deptLabels.map(d=>respondedByDept[d]||0);
+    const missingData=deptLabels.map(d=>missingByDept[d]||0);
     if(missingChart) missingChart.destroy();
-    missingChart=new Chart($("missingChart"),{type:"bar",data:{labels:buLabels,datasets:[
+    missingChart=new Chart($("missingChart"),{type:"bar",data:{labels:deptLabels,datasets:[
       {label:"ตอบรับแล้ว",data:respondedData,backgroundColor:"#16845b",borderRadius:4,maxBarThickness:22},
       {label:"ยังไม่ตอบรับ",data:missingData,backgroundColor:"#0e7490",borderRadius:4,maxBarThickness:22},
     ]},options:{indexAxis:"y",responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"bottom"},tooltip:{callbacks:{label:item=>`${item.dataset.label}: ${item.parsed.x.toLocaleString('th-TH')} คน`}}},scales:{x:{beginAtZero:true,ticks:{precision:0}},y:{grid:{display:false}}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
       if (!elements.length) return;
-      // Both datasets share the same category (BU) labels, so any bar clicked in either series
-      // resolves to the same BU via its category index — the table filter always shows that BU's
-      // "ยังไม่ตอบรับ" list (clicking a "ตอบรับแล้ว" bar filters the not-yet-responded table to
-      // that BU too, which can legitimately come back empty if everyone in that BU responded).
-      const bu=buLabels[elements[0].index];
-      missingBuFilter=(missingBuFilter===bu) ? null : bu;
-      const buSelect=$("missingBuFilterSelect");
-      if (buSelect) buSelect.value=missingBuFilter||"";
+      // Both datasets share the same category (Department) labels, so any bar clicked in either
+      // series resolves to the same Department via its category index — filters the table to
+      // that Department (clicking a "ตอบรับแล้ว" bar filters the table to that Department too,
+      // which can legitimately show only responded people, or come back empty under the ตอบ/
+      // ไม่ตอบ filter, depending on what else is selected).
+      const dept=deptLabels[elements[0].index];
+      missingDeptFilter=(missingDeptFilter===dept) ? null : dept;
+      const deptSelect=$("missingDeptFilterSelect");
+      if (deptSelect) deptSelect.value=missingDeptFilter||"";
       missingPage=1;
       renderMissingTable();
     }}});
-
-    populateReportFilterSelects(allMasterRows);
-    currentRows=rows;
-    renderTable();
-    renderMissingTable();
   }
   // Populates the BU / Department / จำนวนผู้ตอบตามช่วงเวลา 15 นาที filter-bar dropdowns
   // (added 2026-09-24) from whatever's actually in the current Phone Book data, preserving each
@@ -490,17 +503,27 @@
   // — matching how renderMissingTable()'s own filtering already treats blanks, so a value shown
   // here always matches something below. The bucket dropdown only lists buckets that actually
   // have at least one person in them (via each row's `ResponseBucket`, computed in render()).
+  // CASCADING (added 2026-09-24): Department is scoped to the currently-selected BU (missingBuFilter)
+  // so the dropdown never offers a Department that doesn't exist within the chosen BU. If the
+  // previously-selected Department falls outside the new BU scope, it's cleared back to "ทั้งหมด"
+  // (both the module-level missingDeptFilter and the <select>'s value) rather than silently kept.
   function populateReportFilterSelects(rows) {
     const buSelect=$("missingBuFilterSelect"), deptSelect=$("missingDeptFilterSelect"), bucketSelect=$("missingBucketFilterSelect");
     const buValues=[...new Set(rows.map(p=>clean(p.BU)||"ไม่ระบุ BU"))].sort((a,b)=>a.localeCompare(b));
-    const deptValues=[...new Set(rows.map(p=>clean(p.Department)||"ไม่ระบุ Department"))].sort((a,b)=>a.localeCompare(b));
+    const deptScope = missingBuFilter ? rows.filter(p=>(clean(p.BU)||"ไม่ระบุ BU")===missingBuFilter) : rows;
+    const deptValues=[...new Set(deptScope.map(p=>clean(p.Department)||"ไม่ระบุ Department"))].sort((a,b)=>a.localeCompare(b));
     const bucketValues=[...new Set(rows.map(p=>p.ResponseBucket).filter(b=>b!==null&&b!==undefined))].sort((a,b)=>a-b);
     const prevBu=buSelect.value, prevDept=deptSelect.value, prevBucket=bucketSelect.value;
     buSelect.innerHTML='<option value="">ทั้งหมด</option>'+buValues.map(v=>`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
     deptSelect.innerHTML='<option value="">ทั้งหมด</option>'+deptValues.map(v=>`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
     bucketSelect.innerHTML='<option value="">ทั้งหมด</option>'+bucketValues.map(b=>`<option value="${b}">${b}–${b+15} นาที</option>`).join("");
     if (buValues.includes(prevBu)) buSelect.value=prevBu;
-    if (deptValues.includes(prevDept)) deptSelect.value=prevDept;
+    if (deptValues.includes(prevDept)) {
+      deptSelect.value=prevDept;
+    } else if (prevDept) {
+      deptSelect.value="";
+      missingDeptFilter=null;
+    }
     if (bucketValues.some(b=>String(b)===prevBucket)) bucketSelect.value=prevBucket;
   }
   // Renders the "รายงานผู้ที่ยังไม่ตอบรับ/ตอบรับ" table: currentReportRows (EVERY master-list
@@ -756,7 +779,15 @@
   $("exportCsvButton").addEventListener("click", exportCsv);
   $("exportExcelButton").addEventListener("click", exportExcel);
   $("exportMissingCsvButton").addEventListener("click", exportMissingCsv);
-  $("missingBuFilterSelect").addEventListener("change", e=>{ missingBuFilter=e.target.value||null; missingPage=1; renderMissingTable(); });
+  // BU changes cascade: re-scope the Department dropdown to the new BU (clearing Department if it
+  // no longer fits) and rebuild missingChart so its Department bars only cover this BU (2026-09-24).
+  $("missingBuFilterSelect").addEventListener("change", e=>{
+    missingBuFilter=e.target.value||null;
+    missingPage=1;
+    populateReportFilterSelects(currentReportRows);
+    renderMissingChart();
+    renderMissingTable();
+  });
   $("missingDeptFilterSelect").addEventListener("change", e=>{ missingDeptFilter=e.target.value||null; missingPage=1; renderMissingTable(); });
   $("missingStatusFilter").addEventListener("change", e=>{ reportStatusFilter=e.target.value||null; missingPage=1; renderMissingTable(); });
   $("missingTypeFilterSelect").addEventListener("change", e=>{ reportTypeFilter=e.target.value||null; missingPage=1; renderMissingTable(); });
@@ -764,6 +795,8 @@
   $("clearMissingAllFiltersButton").addEventListener("click", ()=>{
     missingBuFilter=null; missingDeptFilter=null; reportStatusFilter=null; reportTypeFilter=null; reportBucketFilter=null; missingPage=1;
     ["missingBuFilterSelect","missingDeptFilterSelect","missingStatusFilter","missingTypeFilterSelect","missingBucketFilterSelect"].forEach(id=>{ $(id).value=""; });
+    populateReportFilterSelects(currentReportRows);
+    renderMissingChart();
     renderMissingTable();
   });
   $("missingPrevPageButton").addEventListener("click", ()=>{ missingPage=Math.max(1,missingPage-1); renderMissingTable(); });
