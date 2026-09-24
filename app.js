@@ -21,13 +21,19 @@
   const PAGE_SIZE = 30;
   let currentPage = 1;
   let columnFilters = {id:"", refid:"", email:"", created:"", status:"", drill:""};
-  // "Not yet responded" (Phone Book master list minus everyone who has responded in the
-  // current RefID scope): currentMissingRows/currentPhoneBookTotal are (re)filled on every
-  // render(); missingBuFilter is set by clicking a bar of the missingChart and only calls
-  // renderMissingTable() (never render()), same pattern as the Member table's activeFilter.
-  let currentMissingRows = [];
+  // "รายงานผู้ที่ยังไม่ตอบรับ/ตอบรับ" tab (Phone Book master list): currentReportRows holds
+  // EVERY master-list person (not just the not-yet-responded ones — widened 2026-09-24 to
+  // support the ตอบ/ไม่ตอบ status filter/column below), each tagged with a `Responded`
+  // boolean; currentPhoneBookTotal is the master headcount. Both are (re)filled on every
+  // render(). missingBuFilter (chart-bar click) and missingStatusFilter (ตอบ/ไม่ตอบ dropdown,
+  // added 2026-09-24) combine to filter the table; missingPage (added 2026-09-24, same
+  // PAGE_SIZE as the Member table) paginates it. All three only call renderMissingTable()
+  // (never render()), same pattern as the Member table's activeFilter/columnFilters/currentPage.
+  let currentReportRows = [];
   let currentPhoneBookTotal = 0;
   let missingBuFilter = null;
+  let reportStatusFilter = null; // null (all) | "responded" | "missing"
+  let missingPage = 1;
   const $ = id => document.getElementById(id);
   const show = (id, visible=true) => $(id).classList.toggle("hidden", !visible);
   const clean = value => String(value ?? "").trim();
@@ -93,7 +99,8 @@
   // Reads the "Phone Book" master list from the /sites/snet SharePoint site (separate site
   // from cfg.sitePath/"Member"). Same pagination pattern as readSharePointList(). Field names
   // come from cfg.phoneBook.fields — internal SharePoint names (field_15/field_16/field_14/
-  // field_10), confirmed via each column's FldEdit.aspx URL — never guess these, see config.js.
+  // field_10/field_12), confirmed via each column's FldEdit.aspx URL — never guess these, see
+  // config.js. Department (field_12) added 2026-09-24, table-only per the user's request.
   async function readPhoneBookList(token) {
     const pb = cfg.phoneBook;
     if (!pb) return [];
@@ -102,7 +109,7 @@
     const list = (lists.value || []).find(x => x.displayName === pb.listName);
     if (!list) throw new Error(`ไม่พบ SharePoint List ชื่อ ${pb.listName} ที่ไซต์ ${pb.sitePath}`);
     const f = pb.fields;
-    const fields = `${f.email},${f.bu},${f.division},${f.jobTitle}`;
+    const fields = `${f.email},${f.bu},${f.division},${f.jobTitle},${f.department}`;
     let next = `/sites/${site.id}/lists/${list.id}/items?$expand=fields($select=${fields})&$select=id,fields&$top=999`;
     const rows = [];
     while (next) {
@@ -113,6 +120,7 @@
         BU: fieldText(item.fields[f.bu]),
         Division: fieldText(item.fields[f.division]),
         JobTitle: fieldText(item.fields[f.jobTitle]),
+        Department: fieldText(item.fields[f.department]),
       })));
       next = page["@odata.nextLink"] || null;
     }
@@ -145,6 +153,10 @@
     document.querySelectorAll(".col-filter").forEach(input=>{ input.value=""; });
     currentPage=1;
     missingBuFilter=null;
+    reportStatusFilter=null;
+    missingPage=1;
+    const statusFilterEl=$("missingStatusFilter");
+    if (statusFilterEl) statusFilterEl.value="";
     const ref=$("refFilter").value;
     const scoped=ref === "all" ? allRows : allRows.filter(r=>clean(r.RefID)===ref);
     // Exclude the Admin announcement row (has Mode/iMsg) from every metric and the table — only member responses stay.
@@ -190,7 +202,13 @@
     // NOT in respondedEmails (already scoped to the current RefID filter, same as everything
     // else in this function).
     const missingRows=phoneBookEmails.filter(e=>!respondedEmails.has(e)).map(e=>phoneBookByEmail[e]);
-    currentMissingRows=missingRows;
+    // "รายงานผู้ที่ยังไม่ตอบรับ/ตอบรับ" table (widened 2026-09-24, was missingRows only) — EVERY
+    // master-list person, tagged with whether they're in respondedEmails, so the tab's own
+    // ตอบ/ไม่ตอบ filter and status column can show either or both. `missingRows` above (the
+    // not-yet-responded subset) is still computed as-is for kpiMissing/kpiTotal/pending/the
+    // doughnut's "Pending Employer" — this is a separate, additional array just for this table.
+    const allMasterRows=phoneBookEmails.map(e=>({...phoneBookByEmail[e], Responded:respondedEmails.has(e)}));
+    currentReportRows=allMasterRows;
     currentPhoneBookTotal=phoneBookEmails.length;
     // Show "–" (not "0") when the Phone Book hasn't loaded at all, so a genuine "everyone
     // responded" (0 missing, Phone Book loaded fine) is never confused with "no master data".
@@ -379,36 +397,63 @@
     renderTable();
     renderMissingTable();
   }
-  // Renders the "ยังไม่ตอบ (Master - Phone Book)" table: currentMissingRows, filtered by
-  // missingBuFilter (set by clicking a bar of missingChart) if any, sorted by Email. Called on
-  // its own by the chart's onClick and the clear-filter link, never destroys/rebuilds missingChart.
+  // Renders the "รายงานผู้ที่ยังไม่ตอบรับ/ตอบรับ" table: currentReportRows (EVERY master-list
+  // person, tagged Responded true/false — widened 2026-09-24), filtered by missingBuFilter
+  // (chart-bar click) and/or reportStatusFilter (the ตอบ/ไม่ตอบ dropdown, added 2026-09-24),
+  // sorted by Email, paginated at PAGE_SIZE (30/page, added 2026-09-24 — same as the Member
+  // table, so a large Master list is never "crammed" into one scrolling box). Called on its
+  // own by the chart's onClick, the status-filter dropdown, the pagination buttons, and the
+  // clear-filter link — never destroys/rebuilds missingChart.
   function renderMissingTable() {
-    const list=missingBuFilter ? currentMissingRows.filter(p=>(clean(p.BU)||"ไม่ระบุ BU")===missingBuFilter) : currentMissingRows;
+    let list=currentReportRows;
+    if (missingBuFilter) list=list.filter(p=>(clean(p.BU)||"ไม่ระบุ BU")===missingBuFilter);
+    if (reportStatusFilter==="responded") list=list.filter(p=>p.Responded);
+    else if (reportStatusFilter==="missing") list=list.filter(p=>!p.Responded);
     const sorted=[...list].sort((a,b)=>clean(a.Email).localeCompare(clean(b.Email)));
-    const filterNote=missingBuFilter
-      ? ` — กรองตาม BU: <strong>${escapeHtml(missingBuFilter)}</strong> <a href="#" id="clearMissingFilter" style="color:#2563eb;text-decoration:underline;">(ล้างตัวกรอง)</a>`
-      : "";
+
+    const total=sorted.length;
+    const totalPages=Math.max(1, Math.ceil(total/PAGE_SIZE));
+    if (missingPage>totalPages) missingPage=totalPages;
+    if (missingPage<1) missingPage=1;
+    const startIdx=(missingPage-1)*PAGE_SIZE;
+    const pageRows=sorted.slice(startIdx, startIdx+PAGE_SIZE);
+
+    const filterParts=[];
+    if (missingBuFilter) filterParts.push(`BU: <strong>${escapeHtml(missingBuFilter)}</strong> <a href="#" id="clearMissingFilter" style="color:#2563eb;text-decoration:underline;">(ล้าง)</a>`);
+    if (reportStatusFilter) filterParts.push(`สถานะ: <strong>${reportStatusFilter==="responded"?"ตอบรับแล้ว":"ยังไม่ตอบรับ"}</strong>`);
+    const filterNote=filterParts.length ? ` — กรองตาม ${filterParts.join(", ")}` : "";
+    const rangeText=total ? `${startIdx+1}–${Math.min(startIdx+PAGE_SIZE,total)}` : "0";
     $("missingSummary").innerHTML=currentPhoneBookTotal
-      ? `ยังไม่ตอบ ${sorted.length.toLocaleString("th-TH")} จาก ${currentPhoneBookTotal.toLocaleString("th-TH")} คนใน Master${filterNote}`
+      ? `แสดง ${rangeText} จาก ${total.toLocaleString("th-TH")} รายการ (Master ทั้งหมด ${currentPhoneBookTotal.toLocaleString("th-TH")} คน)${filterNote}`
       : `ยังไม่ได้โหลดข้อมูล Phone Book (Master List)`;
     const clearLink=$("clearMissingFilter");
-    if (clearLink) clearLink.addEventListener("click", e=>{ e.preventDefault(); missingBuFilter=null; renderMissingTable(); });
-    $("missingTable").innerHTML=sorted.map(p=>
-      `<tr><td>${escapeHtml(p.Email)||'-'}</td><td>${escapeHtml(p.BU)||'-'}</td><td>${escapeHtml(p.Division)||'-'}</td><td>${escapeHtml(p.JobTitle)||'-'}</td></tr>`
-    ).join("") || `<tr><td colspan="4">${currentPhoneBookTotal ? (missingBuFilter?'ไม่พบข้อมูลที่ตรงกับตัวกรอง':'ทุกคนใน Master ตอบครบแล้ว') : '-'}</td></tr>`;
+    if (clearLink) clearLink.addEventListener("click", e=>{ e.preventDefault(); missingBuFilter=null; missingPage=1; renderMissingTable(); });
+    $("missingTable").innerHTML=pageRows.map(p=>{
+      const cls=p.Responded?"responded":"pending";
+      const label=p.Responded?"ตอบรับแล้ว":"ยังไม่ตอบรับ";
+      return `<tr><td>${escapeHtml(p.Email)||'-'}</td><td>${escapeHtml(p.BU)||'-'}</td><td>${escapeHtml(p.Division)||'-'}</td><td>${escapeHtml(p.JobTitle)||'-'}</td><td>${escapeHtml(p.Department)||'-'}</td><td><span class="badge ${cls}">${label}</span></td></tr>`;
+    }).join("") || `<tr><td colspan="6">${currentPhoneBookTotal ? (missingBuFilter||reportStatusFilter?'ไม่พบข้อมูลที่ตรงกับตัวกรอง':'ไม่พบข้อมูล') : '-'}</td></tr>`;
+
+    $("missingPageIndicator").textContent=`หน้า ${missingPage} / ${totalPages}`;
+    $("missingPrevPageButton").disabled=missingPage<=1;
+    $("missingNextPageButton").disabled=missingPage>=totalPages;
   }
-  // Exports the FULL current "not yet responded" match set (missingBuFilter applied) — same
-  // csvEscape/BOM/downloadBlob pattern as exportCsv(), kept separate since it's a different
-  // column set (Email/BU/Division/JobTitle, no ID/RefID/Created/DrillResponse).
+  // Exports the FULL current match set (missingBuFilter + reportStatusFilter applied, ALL
+  // pages, not just the visible page — widened 2026-09-24 along with the table above) — same
+  // csvEscape/BOM/downloadBlob pattern as exportCsv(). Now includes the Status column so an
+  // "all" export can still tell responded/not-responded apart.
   function exportMissingCsv() {
-    const list=missingBuFilter ? currentMissingRows.filter(p=>(clean(p.BU)||"ไม่ระบุ BU")===missingBuFilter) : currentMissingRows;
-    if (!list.length) { setMessage("ไม่มีรายชื่อที่ยังไม่ตอบตามตัวกรองปัจจุบัน (หรือยังไม่ได้โหลด Phone Book)", "error"); return; }
+    let list=currentReportRows;
+    if (missingBuFilter) list=list.filter(p=>(clean(p.BU)||"ไม่ระบุ BU")===missingBuFilter);
+    if (reportStatusFilter==="responded") list=list.filter(p=>p.Responded);
+    else if (reportStatusFilter==="missing") list=list.filter(p=>!p.Responded);
+    if (!list.length) { setMessage("ไม่มีรายชื่อตามตัวกรองปัจจุบัน (หรือยังไม่ได้โหลด Phone Book)", "error"); return; }
     const csvEscape=v=>{ const s=String(v ?? ""); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
-    const headers=["Email","BU","Division","JobTitle"];
+    const headers=["Email","BU","Division","JobTitle","Department","Status"];
     const lines=[headers.join(",")];
-    list.forEach(p=>{ lines.push([clean(p.Email), clean(p.BU), clean(p.Division), clean(p.JobTitle)].map(csvEscape).join(",")); });
+    list.forEach(p=>{ lines.push([clean(p.Email), clean(p.BU), clean(p.Division), clean(p.JobTitle), clean(p.Department), p.Responded?"ตอบรับแล้ว":"ยังไม่ตอบรับ"].map(csvEscape).join(",")); });
     const blob=new Blob(["﻿"+lines.join("\r\n")], {type:"text/csv;charset=utf-8;"});
-    downloadBlob(blob, `phonebook-not-responded-${exportTimestamp()}.csv`);
+    downloadBlob(blob, `phonebook-report-${exportTimestamp()}.csv`);
   }
   // Text shown/matched for a row in a given Latest Responses column — shared by the per-column
   // filter inputs and by CSV/Excel export, so "what you filtered on" and "what you exported"
@@ -595,5 +640,8 @@
   $("exportCsvButton").addEventListener("click", exportCsv);
   $("exportExcelButton").addEventListener("click", exportExcel);
   $("exportMissingCsvButton").addEventListener("click", exportMissingCsv);
+  $("missingStatusFilter").addEventListener("change", e=>{ reportStatusFilter=e.target.value||null; missingPage=1; renderMissingTable(); });
+  $("missingPrevPageButton").addEventListener("click", ()=>{ missingPage=Math.max(1,missingPage-1); renderMissingTable(); });
+  $("missingNextPageButton").addEventListener("click", ()=>{ missingPage=missingPage+1; renderMissingTable(); });
   window.addEventListener("DOMContentLoaded",init);
 })();
