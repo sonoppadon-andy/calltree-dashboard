@@ -25,19 +25,23 @@
   // EVERY master-list person (not just the not-yet-responded ones — widened 2026-09-24 to
   // support the ตอบ/ไม่ตอบ status filter/column below), each tagged with a `Responded`
   // boolean; currentPhoneBookTotal is the master headcount. Both are (re)filled on every
-  // render(). Four filters combine (AND) to filter the table: missingBuFilter (BU — driven by
+  // render(). Five filters combine (AND) to filter the table: missingBuFilter (BU — driven by
   // BOTH the #missingBuFilterSelect dropdown and clicking a missingChart bar, added 2026-09-24
   // as the filter-bar section, kept in sync both ways), missingDeptFilter (Department dropdown,
-  // added 2026-09-24), reportStatusFilter (ตอบ/ไม่ตอบ dropdown) and reportTypeFilter (Type
-  // dropdown, added 2026-09-24 — see classifyJobType() below). missingPage (same PAGE_SIZE as
-  // the Member table) paginates the result. All of these only call renderMissingTable() (never
-  // render()), same pattern as the Member table's activeFilter/columnFilters/currentPage.
+  // added 2026-09-24), reportStatusFilter (ตอบ/ไม่ตอบ dropdown), reportTypeFilter (Type
+  // dropdown, added 2026-09-24 — see classifyJobType() below), and reportBucketFilter (จำนวนผู้
+  // ตอบตามช่วงเวลา 15 นาที dropdown, added 2026-09-24 — matches each report row's
+  // `ResponseBucket`, see the ResponseTime/ResponseBucket computation in render()). missingPage
+  // (same PAGE_SIZE as the Member table) paginates the result. All of these only call
+  // renderMissingTable() (never render()), same pattern as the Member table's
+  // activeFilter/columnFilters/currentPage.
   let currentReportRows = [];
   let currentPhoneBookTotal = 0;
   let missingBuFilter = null;
   let missingDeptFilter = null;
   let reportStatusFilter = null; // null (all) | "responded" | "missing"
   let reportTypeFilter = null; // null (all) | "management" | "staff"
+  let reportBucketFilter = null; // null (all) | bucket-start minute (number, e.g. 0, 15, 30...)
   let missingPage = 1;
   const $ = id => document.getElementById(id);
   const show = (id, visible=true) => $(id).classList.toggle("hidden", !visible);
@@ -199,8 +203,9 @@
     missingDeptFilter=null;
     reportStatusFilter=null;
     reportTypeFilter=null;
+    reportBucketFilter=null;
     missingPage=1;
-    ["missingBuFilterSelect","missingDeptFilterSelect","missingStatusFilter","missingTypeFilterSelect"].forEach(id=>{
+    ["missingBuFilterSelect","missingDeptFilterSelect","missingStatusFilter","missingTypeFilterSelect","missingBucketFilterSelect"].forEach(id=>{
       const el=$(id); if (el) el.value="";
     });
     const ref=$("refFilter").value;
@@ -233,6 +238,34 @@
     const respondedEmails=new Set(rows.map(emailOf).filter(Boolean));
     const safe=safeEmails.size;
     const responded=respondedEmails.size;
+    // Reference time for "how long did this member take to respond" is the Admin/notification
+    // row's own Created (the moment the event was announced) for that RefID — NOT each member
+    // row's ClickDateTime, which is unreliable/blank in this list. Each member response row's own
+    // Created is when THAT member's response was recorded (see Latest Responses table's "Created"
+    // column), so elapsed = memberRow.Created − adminRow.Created for the same RefID. (Moved up
+    // 2026-09-24, was further below — needed earlier now to compute each report row's response
+    // time/15-minute bucket alongside allMasterRows below.)
+    const adminCreatedByRef={};
+    scoped.forEach(r=>{
+      if (!isNotificationRow(r) || !r.Created) return;
+      const key=clean(r.RefID)||"Unknown";
+      if (!adminCreatedByRef[key]) adminCreatedByRef[key]=new Date(r.Created);
+    });
+    // "เวลาที่ตอบรับ" (added 2026-09-24) for the Phone Book report table: each person's EARLIEST
+    // response Created time within the current RefID scope (same "earliest wins, unique person"
+    // logic as the Dashboard's response-time histogram below, but keyed by email only — one
+    // Report row per master-list person, not per RefID). Under "All RefID" this is their overall
+    // first-ever response's own timestamp (and that response's own RefID, for bucketing against
+    // ITS admin announcement time) — same aggregation caveat as respondedEmails above.
+    const earliestResponseByEmail={};
+    rows.forEach(r=>{
+      const email=emailOf(r);
+      if (!email || !r.Created) return;
+      const t=new Date(r.Created);
+      if (!earliestResponseByEmail[email] || t<earliestResponseByEmail[email].time) {
+        earliestResponseByEmail[email]={time:t, ref:clean(r.RefID)||"Unknown"};
+      }
+    });
     // Master (Phone Book) list — moved up from further below (2026-09-24) because "Total
     // Records" and the Response Status doughnut's "Pending Employer" now both depend on it, per
     // the user's explicit request. Dedupe the Phone Book itself by email first (keep the first
@@ -253,7 +286,21 @@
     // ตอบ/ไม่ตอบ filter and status column can show either or both. `missingRows` above (the
     // not-yet-responded subset) is still computed as-is for kpiMissing/kpiTotal/pending/the
     // doughnut's "Pending Employer" — this is a separate, additional array just for this table.
-    const allMasterRows=phoneBookEmails.map(e=>({...phoneBookByEmail[e], Responded:respondedEmails.has(e)}));
+    // ResponseTime/ResponseBucket (added 2026-09-24) come from earliestResponseByEmail above —
+    // ResponseBucket is null unless BOTH a response time AND that response's RefID's admin
+    // announcement time are known (same requirement as the Dashboard histogram).
+    const allMasterRows=phoneBookEmails.map(e=>{
+      const resp=earliestResponseByEmail[e];
+      let bucket=null;
+      if (resp) {
+        const adminTime=adminCreatedByRef[resp.ref];
+        if (adminTime) {
+          const mins=(resp.time-adminTime)/60000;
+          if (Number.isFinite(mins) && mins>=0) bucket=Math.floor(mins/15)*15;
+        }
+      }
+      return {...phoneBookByEmail[e], Responded:respondedEmails.has(e), ResponseTime:resp?resp.time:null, ResponseBucket:bucket};
+    });
     currentReportRows=allMasterRows;
     currentPhoneBookTotal=phoneBookEmails.length;
     // Show "–" (not "0") when the Phone Book hasn't loaded at all, so a genuine "everyone
@@ -274,17 +321,6 @@
       ID:`PB-${p.Email}`, RefID:"", EMail:p.Email, Created:null, ResponseSafe:"", HelpNote:"", DrillResponse:"",
     }));
     const help=rows.filter(r=>clean(r.HelpNote) || clean(r.ResponseSafe).toLowerCase()==="seehelpnote").length;
-    // Reference time for "how long did this member take to respond" is the Admin/notification
-    // row's own Created (the moment the event was announced) for that RefID — NOT each member
-    // row's ClickDateTime, which is unreliable/blank in this list. Each member response row's own
-    // Created is when THAT member's response was recorded (see Latest Responses table's "Created"
-    // column), so elapsed = memberRow.Created − adminRow.Created for the same RefID.
-    const adminCreatedByRef={};
-    scoped.forEach(r=>{
-      if (!isNotificationRow(r) || !r.Created) return;
-      const key=clean(r.RefID)||"Unknown";
-      if (!adminCreatedByRef[key]) adminCreatedByRef[key]=new Date(r.Created);
-    });
     // "% ผู้ที่ตอบผิด": compare each RefID's Admin announcement text (iMsg) against each member's
     // Drill Response. Counted per UNIQUE email — if a person answered more than once, only their
     // FIRST Drill Response (by earliest Created, among rows that actually have a Drill Response) is
@@ -447,27 +483,32 @@
     renderTable();
     renderMissingTable();
   }
-  // Populates the BU / Department filter-bar dropdowns (added 2026-09-24) from whatever's
-  // actually in the current Phone Book data, preserving each dropdown's current selection if
-  // it's still a valid option (same "preserve previous" pattern as fillRefFilter()). Blanks
-  // are bucketed as "ไม่ระบุ BU"/"ไม่ระบุ Department" — matching how renderMissingTable()'s own
-  // filtering already treats blanks, so a value shown here always matches something below.
+  // Populates the BU / Department / จำนวนผู้ตอบตามช่วงเวลา 15 นาที filter-bar dropdowns
+  // (added 2026-09-24) from whatever's actually in the current Phone Book data, preserving each
+  // dropdown's current selection if it's still a valid option (same "preserve previous" pattern
+  // as fillRefFilter()). BU/Department blanks are bucketed as "ไม่ระบุ BU"/"ไม่ระบุ Department"
+  // — matching how renderMissingTable()'s own filtering already treats blanks, so a value shown
+  // here always matches something below. The bucket dropdown only lists buckets that actually
+  // have at least one person in them (via each row's `ResponseBucket`, computed in render()).
   function populateReportFilterSelects(rows) {
-    const buSelect=$("missingBuFilterSelect"), deptSelect=$("missingDeptFilterSelect");
+    const buSelect=$("missingBuFilterSelect"), deptSelect=$("missingDeptFilterSelect"), bucketSelect=$("missingBucketFilterSelect");
     const buValues=[...new Set(rows.map(p=>clean(p.BU)||"ไม่ระบุ BU"))].sort((a,b)=>a.localeCompare(b));
     const deptValues=[...new Set(rows.map(p=>clean(p.Department)||"ไม่ระบุ Department"))].sort((a,b)=>a.localeCompare(b));
-    const prevBu=buSelect.value, prevDept=deptSelect.value;
+    const bucketValues=[...new Set(rows.map(p=>p.ResponseBucket).filter(b=>b!==null&&b!==undefined))].sort((a,b)=>a-b);
+    const prevBu=buSelect.value, prevDept=deptSelect.value, prevBucket=bucketSelect.value;
     buSelect.innerHTML='<option value="">ทั้งหมด</option>'+buValues.map(v=>`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
     deptSelect.innerHTML='<option value="">ทั้งหมด</option>'+deptValues.map(v=>`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+    bucketSelect.innerHTML='<option value="">ทั้งหมด</option>'+bucketValues.map(b=>`<option value="${b}">${b}–${b+15} นาที</option>`).join("");
     if (buValues.includes(prevBu)) buSelect.value=prevBu;
     if (deptValues.includes(prevDept)) deptSelect.value=prevDept;
+    if (bucketValues.some(b=>String(b)===prevBucket)) bucketSelect.value=prevBucket;
   }
   // Renders the "รายงานผู้ที่ยังไม่ตอบรับ/ตอบรับ" table: currentReportRows (EVERY master-list
   // person, tagged Responded true/false — widened 2026-09-24), filtered by missingBuFilter,
-  // missingDeptFilter, reportStatusFilter and reportTypeFilter (the filter-bar's 4 dropdowns,
-  // added 2026-09-24 — BU is also settable by clicking a missingChart bar, kept in sync both
-  // ways), sorted by Email, paginated at PAGE_SIZE (30/page — same as the Member table, so a
-  // large Master list is never "crammed" into one scrolling box). Called on its own by the
+  // missingDeptFilter, reportStatusFilter, reportTypeFilter and reportBucketFilter (the
+  // filter-bar's 5 dropdowns — BU is also settable by clicking a missingChart bar, kept in sync
+  // both ways), sorted by Email, paginated at PAGE_SIZE (30/page — same as the Member table, so
+  // a large Master list is never "crammed" into one scrolling box). Called on its own by the
   // chart's onClick, the filter-bar dropdowns, the pagination buttons, and the clear-filter
   // link/button — never destroys/rebuilds missingChart.
   function renderMissingTable() {
@@ -475,6 +516,7 @@
     if (missingBuFilter) list=list.filter(p=>(clean(p.BU)||"ไม่ระบุ BU")===missingBuFilter);
     if (missingDeptFilter) list=list.filter(p=>(clean(p.Department)||"ไม่ระบุ Department")===missingDeptFilter);
     if (reportTypeFilter) list=list.filter(p=>classifyJobType(p.JobTitle)===reportTypeFilter);
+    if (reportBucketFilter!==null) list=list.filter(p=>p.ResponseBucket===reportBucketFilter);
     if (reportStatusFilter==="responded") list=list.filter(p=>p.Responded);
     else if (reportStatusFilter==="missing") list=list.filter(p=>!p.Responded);
     const sorted=[...list].sort((a,b)=>clean(a.Email).localeCompare(clean(b.Email)));
@@ -491,7 +533,8 @@
     if (missingDeptFilter) filterParts.push(`Department: <strong>${escapeHtml(missingDeptFilter)}</strong>`);
     if (reportStatusFilter) filterParts.push(`สถานะ: <strong>${reportStatusFilter==="responded"?"ตอบรับแล้ว":"ยังไม่ตอบรับ"}</strong>`);
     if (reportTypeFilter) filterParts.push(`Type: <strong>${reportTypeFilter==="management"?"Management":"Staff"}</strong>`);
-    const anyFilterActive=Boolean(missingBuFilter||missingDeptFilter||reportStatusFilter||reportTypeFilter);
+    if (reportBucketFilter!==null) filterParts.push(`ช่วงเวลาตอบ: <strong>${reportBucketFilter}–${reportBucketFilter+15} นาที</strong>`);
+    const anyFilterActive=Boolean(missingBuFilter||missingDeptFilter||reportStatusFilter||reportTypeFilter||reportBucketFilter!==null);
     const filterNote=filterParts.length ? ` — กรองตาม ${filterParts.join(", ")}` : "";
     const rangeText=total ? `${startIdx+1}–${Math.min(startIdx+PAGE_SIZE,total)}` : "0";
     $("missingSummary").innerHTML=currentPhoneBookTotal
@@ -501,29 +544,30 @@
     $("missingTable").innerHTML=pageRows.map(p=>{
       const cls=p.Responded?"responded":"pending";
       const label=p.Responded?"ตอบรับแล้ว":"ยังไม่ตอบรับ";
-      return `<tr><td>${escapeHtml(p.Email)||'-'}</td><td>${escapeHtml(p.BU)||'-'}</td><td>${escapeHtml(p.Division)||'-'}</td><td>${escapeHtml(p.JobTitle)||'-'}</td><td>${escapeHtml(p.Department)||'-'}</td><td><span class="badge ${cls}">${label}</span></td></tr>`;
-    }).join("") || `<tr><td colspan="6">${currentPhoneBookTotal ? (anyFilterActive?'ไม่พบข้อมูลที่ตรงกับตัวกรอง':'ไม่พบข้อมูล') : '-'}</td></tr>`;
+      const responseTimeText=p.ResponseTime?escapeHtml(new Date(p.ResponseTime).toLocaleString("th-TH")):'-';
+      return `<tr><td>${escapeHtml(p.Email)||'-'}</td><td>${escapeHtml(p.BU)||'-'}</td><td>${escapeHtml(p.Division)||'-'}</td><td>${escapeHtml(p.JobTitle)||'-'}</td><td>${escapeHtml(p.Department)||'-'}</td><td><span class="badge ${cls}">${label}</span></td><td>${responseTimeText}</td></tr>`;
+    }).join("") || `<tr><td colspan="7">${currentPhoneBookTotal ? (anyFilterActive?'ไม่พบข้อมูลที่ตรงกับตัวกรอง':'ไม่พบข้อมูล') : '-'}</td></tr>`;
 
     $("missingPageIndicator").textContent=`หน้า ${missingPage} / ${totalPages}`;
     $("missingPrevPageButton").disabled=missingPage<=1;
     $("missingNextPageButton").disabled=missingPage>=totalPages;
   }
-  // Exports the FULL current match set (all 4 filter-bar filters applied — BU, Department,
-  // ตอบ/ไม่ตอบ, Type — ALL pages, not just the visible page) — same csvEscape/BOM/downloadBlob
-  // pattern as exportCsv(). Includes the Status column so an "all" export can still tell
-  // responded/not-responded apart.
+  // Exports the FULL current match set (all 5 filter-bar filters applied — BU, Department,
+  // ตอบ/ไม่ตอบ, Type, ช่วงเวลาตอบ — ALL pages, not just the visible page) — same
+  // csvEscape/BOM/downloadBlob pattern as exportCsv(). Includes Status and เวลาที่ตอบรับ columns.
   function exportMissingCsv() {
     let list=currentReportRows;
     if (missingBuFilter) list=list.filter(p=>(clean(p.BU)||"ไม่ระบุ BU")===missingBuFilter);
     if (missingDeptFilter) list=list.filter(p=>(clean(p.Department)||"ไม่ระบุ Department")===missingDeptFilter);
     if (reportTypeFilter) list=list.filter(p=>classifyJobType(p.JobTitle)===reportTypeFilter);
+    if (reportBucketFilter!==null) list=list.filter(p=>p.ResponseBucket===reportBucketFilter);
     if (reportStatusFilter==="responded") list=list.filter(p=>p.Responded);
     else if (reportStatusFilter==="missing") list=list.filter(p=>!p.Responded);
     if (!list.length) { setMessage("ไม่มีรายชื่อตามตัวกรองปัจจุบัน (หรือยังไม่ได้โหลด Phone Book)", "error"); return; }
     const csvEscape=v=>{ const s=String(v ?? ""); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
-    const headers=["Email","BU","Division","JobTitle","Department","Status"];
+    const headers=["Email","BU","Division","JobTitle","Department","Status","ResponseTime"];
     const lines=[headers.join(",")];
-    list.forEach(p=>{ lines.push([clean(p.Email), clean(p.BU), clean(p.Division), clean(p.JobTitle), clean(p.Department), p.Responded?"ตอบรับแล้ว":"ยังไม่ตอบรับ"].map(csvEscape).join(",")); });
+    list.forEach(p=>{ lines.push([clean(p.Email), clean(p.BU), clean(p.Division), clean(p.JobTitle), clean(p.Department), p.Responded?"ตอบรับแล้ว":"ยังไม่ตอบรับ", p.ResponseTime?new Date(p.ResponseTime).toLocaleString("th-TH"):""].map(csvEscape).join(",")); });
     const blob=new Blob(["﻿"+lines.join("\r\n")], {type:"text/csv;charset=utf-8;"});
     downloadBlob(blob, `phonebook-report-${exportTimestamp()}.csv`);
   }
@@ -716,9 +760,10 @@
   $("missingDeptFilterSelect").addEventListener("change", e=>{ missingDeptFilter=e.target.value||null; missingPage=1; renderMissingTable(); });
   $("missingStatusFilter").addEventListener("change", e=>{ reportStatusFilter=e.target.value||null; missingPage=1; renderMissingTable(); });
   $("missingTypeFilterSelect").addEventListener("change", e=>{ reportTypeFilter=e.target.value||null; missingPage=1; renderMissingTable(); });
+  $("missingBucketFilterSelect").addEventListener("change", e=>{ reportBucketFilter=e.target.value===""?null:Number(e.target.value); missingPage=1; renderMissingTable(); });
   $("clearMissingAllFiltersButton").addEventListener("click", ()=>{
-    missingBuFilter=null; missingDeptFilter=null; reportStatusFilter=null; reportTypeFilter=null; missingPage=1;
-    ["missingBuFilterSelect","missingDeptFilterSelect","missingStatusFilter","missingTypeFilterSelect"].forEach(id=>{ $(id).value=""; });
+    missingBuFilter=null; missingDeptFilter=null; reportStatusFilter=null; reportTypeFilter=null; reportBucketFilter=null; missingPage=1;
+    ["missingBuFilterSelect","missingDeptFilterSelect","missingStatusFilter","missingTypeFilterSelect","missingBucketFilterSelect"].forEach(id=>{ $(id).value=""; });
     renderMissingTable();
   });
   $("missingPrevPageButton").addEventListener("click", ()=>{ missingPage=Math.max(1,missingPage-1); renderMissingTable(); });
