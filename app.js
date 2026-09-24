@@ -12,7 +12,11 @@
   // full render(), so the charts themselves aren't destroyed/rebuilt on every click).
   let currentRows = [];
   let currentBucketRowIds = {};
-  let activeFilter = null; // {key, label, predicate(row)=>bool} or null (set by a chart click)
+  // {key, label, predicate(row)=>bool} for a filter over currentRows (most slices/bars), OR
+  // {key, label, rows:[...]} for a filter that supplies its own row set instead of predicating
+  // over currentRows (used by "Pending Employer", added 2026-09-24 — see getFilteredRows()), OR
+  // null (no chart filter active).
+  let activeFilter = null;
   // Latest Responses table: per-column text filters, pagination (30 rows/page).
   const PAGE_SIZE = 30;
   let currentPage = 1;
@@ -171,7 +175,40 @@
     const respondedEmails=new Set(rows.map(emailOf).filter(Boolean));
     const safe=safeEmails.size;
     const responded=respondedEmails.size;
-    const pending=Math.max(rows.length-responded,0);
+    // Master (Phone Book) list — moved up from further below (2026-09-24) because "Total
+    // Records" and the Response Status doughnut's "Pending Employer" now both depend on it, per
+    // the user's explicit request. Dedupe the Phone Book itself by email first (keep the first
+    // row per email) in case the same person has more than one row there.
+    const phoneBookByEmail={};
+    allPhoneBook.forEach(p=>{
+      const email=clean(p.Email).toLowerCase();
+      if (!email || phoneBookByEmail[email]) return;
+      phoneBookByEmail[email]=p;
+    });
+    const phoneBookEmails=Object.keys(phoneBookByEmail);
+    // "ยังไม่แจ้งเหตุ" (has not reported at all) = every unique email in the master list that is
+    // NOT in respondedEmails (already scoped to the current RefID filter, same as everything
+    // else in this function).
+    const missingRows=phoneBookEmails.filter(e=>!respondedEmails.has(e)).map(e=>phoneBookByEmail[e]);
+    currentMissingRows=missingRows;
+    currentPhoneBookTotal=phoneBookEmails.length;
+    // Show "–" (not "0") when the Phone Book hasn't loaded at all, so a genuine "everyone
+    // responded" (0 missing, Phone Book loaded fine) is never confused with "no master data".
+    $("kpiMissing").textContent=phoneBookEmails.length ? missingRows.length.toLocaleString("th-TH") : "–";
+    // "Pending" (fixed 2026-09-24, was Math.max(rows.length-responded,0) — mixed a row-count
+    // with a people-count, which is why the kpiPending card was hidden in the first place, see
+    // the KPI-semantics notes) = master employees who have not reported at all. Same set as
+    // `missingRows` above — reusing it keeps the doughnut's "Pending Employer" slice, the
+    // kpiPending KPI (still hidden), and the "รายงานผู้ที่ยังตอบรับ" tab all in agreement.
+    const pending=missingRows.length;
+    // Pseudo-rows so clicking "Pending Employer" can list people in the Latest Responses table
+    // who have NO row there at all (they never submitted anything) — only Email is real; every
+    // other column is blank ("-") since there is no response to show. `rowColumnText()` and
+    // `renderTable()` already handle blank ResponseSafe/HelpNote/DrillResponse/Created/RefID
+    // gracefully (existing "||'-'" fallbacks), so no changes were needed there.
+    const pendingMasterRows=missingRows.map(p=>({
+      ID:`PB-${p.Email}`, RefID:"", EMail:p.Email, Created:null, ResponseSafe:"", HelpNote:"", DrillResponse:"",
+    }));
     const help=rows.filter(r=>clean(r.HelpNote) || clean(r.ResponseSafe).toLowerCase()==="seehelpnote").length;
     // Reference time for "how long did this member take to respond" is the Admin/notification
     // row's own Created (the moment the event was announced) for that RefID — NOT each member
@@ -209,7 +246,12 @@
     const drillEntries=Object.values(firstDrillByRefEmail).filter(({ref})=>adminIMsgByRef[ref]!==undefined);
     const wrongCount=drillEntries.filter(({drill,ref})=>drill!==adminIMsgByRef[ref]).length;
     const wrongPct=drillEntries.length ? (wrongCount/drillEntries.length*100) : 0;
-    $("kpiTotal").textContent=rows.length.toLocaleString("th-TH");
+    // "Total Records" (changed 2026-09-24, was rows.length — a row count of Member responses)
+    // now shows the Phone Book master headcount instead, per the user's explicit request. This
+    // is a genuine meaning change: it used to answer "how many response rows exist", it now
+    // answers "how many employees are in the master list" — "–" (not "0") if Phone Book hasn't
+    // loaded, same reasoning as kpiMissing above.
+    $("kpiTotal").textContent=phoneBookEmails.length ? phoneBookEmails.length.toLocaleString("th-TH") : "–";
     $("kpiSafe").textContent=safe.toLocaleString("th-TH");
     $("kpiResponded").textContent=responded.toLocaleString("th-TH");
     $("kpiPending").textContent=pending.toLocaleString("th-TH");
@@ -233,22 +275,26 @@
     }
 
     // Row-level predicates for each doughnut slice, reused by its click handler so the table
-    // filter shows exactly the rows that make up that slice. "Safe"/"Pending" mirror the
-    // definitions of the `safe`/`pending` numbers above; "Need help" mirrors `help` above
-    // (which is already row-based, so clicking it filters to exactly `help` rows).
+    // filter shows exactly the rows that make up that slice. "Safe" mirrors the `safe` number
+    // above; "Need help" mirrors `help` above (which is already row-based, so clicking it
+    // filters to exactly `help` rows). "Pending Employer" (renamed + redefined 2026-09-24) has
+    // no predicate — it has no Member rows to filter at all (these people never submitted
+    // anything), so its click handler below swaps in `pendingMasterRows` wholesale instead of
+    // filtering `currentRows`. See `getFilteredRows()`'s `activeFilter.rows` branch.
     const statusPredicates={
       safe: isSafe,
-      pending: r=>!hasResponse(r),
       help: r=>Boolean(clean(r.HelpNote) || clean(r.ResponseSafe).toLowerCase()==="seehelpnote"),
     };
-    const statusLabels={safe:"Safe", pending:"Pending", help:"Need help"};
+    const statusLabels={safe:"Safe", pending:"Pending Employer", help:"Need help"};
     if(statusChart) statusChart.destroy();
-    statusChart=new Chart($("statusChart"),{type:"doughnut",data:{labels:["Safe","Pending","Need help"],datasets:[{data:[safe,pending,help],backgroundColor:["#16845b","#e9a23b","#d64545"],borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"bottom"}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
+    statusChart=new Chart($("statusChart"),{type:"doughnut",data:{labels:["Safe","Pending Employer","Need help"],datasets:[{data:[safe,pending,help],backgroundColor:["#16845b","#e9a23b","#d64545"],borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"bottom"}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
       if (!elements.length) return;
       const kinds=["safe","pending","help"];
       const kind=kinds[elements[0].index];
       const key=`status:${kind}`;
-      activeFilter=(activeFilter && activeFilter.key===key) ? null : {key, label:statusLabels[kind], predicate:statusPredicates[kind]};
+      if (activeFilter && activeFilter.key===key) { activeFilter=null; }
+      else if (kind==="pending") { activeFilter={key, label:statusLabels.pending, rows:pendingMasterRows}; }
+      else { activeFilter={key, label:statusLabels[kind], predicate:statusPredicates[kind]}; }
       currentPage=1;
       renderTable();
     }}});
@@ -295,24 +341,6 @@
       currentPage=1;
       renderTable();
     }}});
-
-    // "Not yet responded" vs. the Phone Book master list: every unique email in the master
-    // list that is NOT in respondedEmails (computed above, already scoped to the current RefID
-    // filter same as everything else in this function). Dedupe the Phone Book itself by email
-    // first (keep the first row per email) in case the same person has more than one row there.
-    const phoneBookByEmail={};
-    allPhoneBook.forEach(p=>{
-      const email=clean(p.Email).toLowerCase();
-      if (!email || phoneBookByEmail[email]) return;
-      phoneBookByEmail[email]=p;
-    });
-    const phoneBookEmails=Object.keys(phoneBookByEmail);
-    const missingRows=phoneBookEmails.filter(e=>!respondedEmails.has(e)).map(e=>phoneBookByEmail[e]);
-    currentMissingRows=missingRows;
-    currentPhoneBookTotal=phoneBookEmails.length;
-    // Show "–" (not "0") when the Phone Book hasn't loaded at all, so a genuine "everyone
-    // responded" (0 missing, Phone Book loaded fine) is never confused with "no master data".
-    $("kpiMissing").textContent=phoneBookEmails.length ? missingRows.length.toLocaleString("th-TH") : "–";
 
     // Both series (responded vs. not-yet-responded) grouped by BU, so the two counts sit on the
     // same categories for easy comparison — per the user's explicit request (2026-09-23).
@@ -400,7 +428,12 @@
   // -> sorted newest-first. This is the full matching set (every page), used both to slice out
   // the current page for display and, unsliced, for CSV/Excel export.
   function getFilteredRows() {
-    let list = activeFilter ? currentRows.filter(activeFilter.predicate) : currentRows;
+    // "Pending Employer" (added 2026-09-24) has no underlying Member-list rows to filter —
+    // it supplies its own pseudo-rows (activeFilter.rows) built from the Phone Book master
+    // list instead of a predicate over currentRows. Every other slice/bar still uses predicate.
+    let list = activeFilter
+      ? (activeFilter.rows ? activeFilter.rows : currentRows.filter(activeFilter.predicate))
+      : currentRows;
     Object.entries(columnFilters).forEach(([col, needle]) => {
       if (!needle) return;
       list = list.filter(r => rowColumnText(r, col).toLowerCase().includes(needle));
