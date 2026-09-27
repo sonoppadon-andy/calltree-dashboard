@@ -439,7 +439,7 @@
     };
     const statusLabels={safe:"Safe", pending:"Pending Employer", help:"Need help"};
     if(statusChart) statusChart.destroy();
-    statusChart=new Chart($("statusChart"),{type:"doughnut",data:{labels:["Safe","Pending Employer","Need help"],datasets:[{data:[safe,pending,help],backgroundColor:["#16845b","#e9a23b","#d64545"],borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"bottom"}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
+    statusChart=new Chart($("statusChart"),{type:"doughnut",data:{labels:["Safe","Pending Employer","Need help"],datasets:[{data:[safe,pending,help],backgroundColor:["#16845b","#C5A153","#d64545"],borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"bottom"}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
       if (!elements.length) return;
       const kinds=["safe","pending","help"];
       const kind=kinds[elements[0].index];
@@ -481,7 +481,7 @@
     const bucketLabels=[], bucketData=[];
     for (let b=0; b<=maxBucket; b+=15) { bucketLabels.push(`${b}–${b+15} นาที`); bucketData.push(bucketCounts[b]||0); }
     if(drillChart) drillChart.destroy();
-    drillChart=new Chart($("drillChart"),{type:"bar",data:{labels:bucketLabels,datasets:[{label:"จำนวนผู้ตอบ",data:bucketData,backgroundColor:"#2563eb",borderRadius:4,maxBarThickness:56}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{title:items=>items[0].label,label:item=>`${item.parsed.y.toLocaleString('th-TH')} คน`}}},scales:{x:{title:{display:true,text:'นาทีหลังจาก Admin แจ้งเหตุ'},grid:{display:false}},y:{beginAtZero:true,ticks:{precision:0},title:{display:true,text:'จำนวนผู้ตอบ (คนไม่ซ้ำ)'}}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
+    drillChart=new Chart($("drillChart"),{type:"bar",data:{labels:bucketLabels,datasets:[{label:"จำนวนผู้ตอบ",data:bucketData,backgroundColor:"#202B49",borderRadius:4,maxBarThickness:56}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{title:items=>items[0].label,label:item=>`${item.parsed.y.toLocaleString('th-TH')} คน`}}},scales:{x:{title:{display:true,text:'นาทีหลังจาก Admin แจ้งเหตุ'},grid:{display:false}},y:{beginAtZero:true,ticks:{precision:0},title:{display:true,text:'จำนวนผู้ตอบ (คนไม่ซ้ำ)'}}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
       if (!elements.length) return;
       const bucketStart=elements[0].index*15;
       const key=`bucket:${bucketStart}`;
@@ -531,7 +531,7 @@
     if(missingChart) missingChart.destroy();
     missingChart=new Chart($("missingChart"),{type:"bar",data:{labels:deptLabels,datasets:[
       {label:"ตอบรับแล้ว",data:respondedData,backgroundColor:"#16845b",borderRadius:4,maxBarThickness:22},
-      {label:"ยังไม่ตอบรับ",data:missingData,backgroundColor:"#0e7490",borderRadius:4,maxBarThickness:22},
+      {label:"ยังไม่ตอบรับ",data:missingData,backgroundColor:"#202B49",borderRadius:4,maxBarThickness:22},
     ]},options:{indexAxis:"y",responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"bottom"},tooltip:{callbacks:{label:item=>`${item.dataset.label}: ${item.parsed.x.toLocaleString('th-TH')} คน`}}},scales:{x:{beginAtZero:true,ticks:{precision:0}},y:{grid:{display:false}}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
       if (!elements.length) return;
       // Both datasets share the same category (Department) labels, so any bar clicked in either
@@ -716,7 +716,7 @@
     const pageRows=sorted.slice(startIdx, startIdx+PAGE_SIZE);
 
     const filterNote=activeFilter
-      ? ` — กรองตามกราฟ: <strong>${escapeHtml(activeFilter.label)}</strong> <a href="#" id="clearTableFilter" style="color:#2563eb;text-decoration:underline;">(ล้างตัวกรอง)</a>`
+      ? ` — กรองตามกราฟ: <strong>${escapeHtml(activeFilter.label)}</strong> <a href="#" id="clearTableFilter" style="color:#202B49;text-decoration:underline;">(ล้างตัวกรอง)</a>`
       : "";
     const rangeText=total ? `${startIdx+1}–${Math.min(startIdx+PAGE_SIZE,total)}` : "0";
     $("recordSummary").innerHTML=`แสดง ${rangeText} จาก ${total} รายการ${filterNote}`;
@@ -802,7 +802,23 @@
     try { const result=await msalApp.loginPopup({scopes:cfg.graphScopes,prompt:"select_account"}); msalApp.setActiveAccount(result.account); show("loginView",false); show("dashboardView",true); await loadData(); }
     catch(error){ console.error(error); $("configMessage").textContent=error.message || "เข้าสู่ระบบไม่สำเร็จ"; }
   }
+  // Singha Estate CI branding (added 2026-09-27): the login page's brand-mark shows the company
+  // logo from images/singhaestate-logo.svg (kept in its own folder, per the user's explicit
+  // request, so it's easy to find/replace/publish separately from the code files) if that file
+  // exists; otherwise it falls back to a plain "SE" initials mark in the brand colors so the page
+  // never shows a broken-image icon. Wired via a real `error` event listener (not an inline
+  // onerror="..." attribute) because the page's CSP (script-src 'self', no 'unsafe-inline')
+  // would silently block an inline event-handler attribute.
+  function initBrandLogo() {
+    const img=$("brandLogoImg"), fallback=$("brandLogoFallback");
+    if (!img || !fallback) return;
+    img.addEventListener("error", () => {
+      img.style.display="none";
+      fallback.style.display="flex";
+    }, {once:true});
+  }
   async function init() {
+    initBrandLogo();
     if (!validateConfig()) return;
     try {
       if (typeof msal === "undefined") throw new Error("ไม่สามารถโหลดไลบรารี Microsoft Sign-in (MSAL) ได้ กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต, Proxy/Firewall ขององค์กร หรือ Ad-blocker ที่อาจบล็อก alcdn.msauth.net แล้วรีเฟรชหน้าใหม่");
