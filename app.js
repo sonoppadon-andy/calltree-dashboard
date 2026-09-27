@@ -162,24 +162,31 @@
   // ติดในอาคาร อยู่ชั้น40:โทร 086-897-5806 จอย"). A single person can tick more than one option in
   // the same HelpNote.
   //
-  // Per the user's explicit choice (asked directly, since this is exactly the kind of ambiguous
-  // business logic "Never Guess" says must be confirmed, not assumed): the reason-breakdown chart
-  // counts each PERSON under exactly ONE bucket — the most SEVERE reason they ticked — not one
-  // bucket per ticked option. Severity order (highest first), also confirmed with the user:
-  // บาดเจ็บ (injury) > ติดในอาคาร (trapped) > หลงทาง (lost) > อื่นๆ (none of the 3 keywords found —
-  // covers test/garbled entries like "ทดสอบ...", "Test Show log...", "หลงๆลืมๆ" seen in the real
-  // sample data, which do NOT literally contain the "หลงทาง" substring).
+  // REVISED 2026-09-27 (2nd pass) per the user's explicit correction: each entry is classified by
+  // WHICHEVER of the 3 keywords appears FIRST (leftmost) in the actual HelpNote text — NOT a fixed
+  // severity ranking (the original "บาดเจ็บ > ติดในอาคาร > หลงทาง" priority order from the first
+  // pass was wrong whenever หลงทาง was ticked before ติดในอาคาร in the text, e.g. "หลงทาง,
+  // ติดในอาคาร ทดสอบ..." should classify as หลงทาง — the keyword that's actually first in the
+  // sentence — not ติดในอาคาร). Ties can't occur (each keyword is checked by its own text
+  // position; the earliest index wins). No keyword found at all (test/garbled entries like
+  // "ทดสอบ...", "Test Show log...", "หลงๆลืมๆ" seen in the real sample data — the last one does
+  // NOT literally contain the "หลงทาง" substring) → "อื่นๆ".
   function classifyHelpReason(helpNote) {
     const t = clean(helpNote);
-    if (t.includes("บาดเจ็บ")) return "injury";
-    if (t.includes("ติดในอาคาร")) return "trapped";
-    if (t.includes("หลงทาง")) return "lost";
-    return "other";
+    const candidates = [
+      {key:"injury", idx:t.indexOf("บาดเจ็บ")},
+      {key:"lost", idx:t.indexOf("หลงทาง")},
+      {key:"trapped", idx:t.indexOf("ติดในอาคาร")},
+    ].filter(c => c.idx !== -1);
+    if (!candidates.length) return "other";
+    candidates.sort((a,b) => a.idx - b.idx);
+    return candidates[0].key;
   }
   const HELP_REASON_LABELS = {injury:"บาดเจ็บ", lost:"หลงทาง", trapped:"ติดในอาคาร", other:"อื่นๆ"};
   // Display order for the reason chart follows the order the user originally asked for
-  // ("บาดเจ็บ,หลงทาง ติดในอาคาร อื่นๆ"), which is NOT the same as the severity priority order above
-  // (that order only matters for picking ONE bucket per person, not for how the bars are laid out).
+  // ("บาดเจ็บ,หลงทาง ติดในอาคาร อื่นๆ") — unrelated to classifyHelpReason()'s own "first keyword in
+  // the text" logic above (that's about picking ONE bucket per entry, not about how the bars are
+  // laid out).
   const HELP_REASON_ORDER = ["injury","lost","trapped","other"];
 
   function setMessage(message, kind="info") {
@@ -392,25 +399,36 @@
       if (!(key in adminIMsgByRef)) adminIMsgByRef[key]=fieldText(r.iMsg).trim();
     });
 
-    // ---- "รายงานขอความช่วยเหลือ" tab base data (added 2026-09-27) — every unique person (by
-    // email) who requested help within the current RefID scope, regardless of the Help tab's own
-    // filter bar (that's applied later, inside renderHelpChart()/renderHelpTable(), same
-    // unfiltered-base pattern as currentReportRows/renderMissingChart()/renderMissingTable()).
-    // Per the user's explicit "นับคนไม่ซ้ำ" decision: one row per person, keeping their EARLIEST
-    // qualifying row (by Created) if they have more than one.
-    const helpRowByEmail={};
+    // ---- "รายงานขอความช่วยเหลือ" tab base data — REVISED 2026-09-27 (2nd pass) per the user's
+    // explicit correction: grouping is by (RefID, Email), NOT by Email alone — someone who
+    // requested help in TWO DIFFERENT RefIDs (relevant under "All RefID") now shows as two
+    // separate entries, one per RefID, instead of being collapsed into a single overall-earliest
+    // row (the earlier Email-only dedup was why the table looked incomplete — it was silently
+    // dropping a person's help request in every RefID except their overall-first one). Within the
+    // SAME RefID, a person who submitted more than one qualifying row is still collapsed to ONE
+    // entry — "นับการตอบ ID แรกของ Email" — interpreted as the EARLIEST Created row for that
+    // (RefID, Email) pair, same "first/earliest wins" tie-break convention used everywhere else in
+    // this file (firstDrillByRefEmail, earliestResponseByEmail, etc.); flag it if "ID แรก" was
+    // meant as literally the smallest SharePoint item ID instead of earliest submission time — in
+    // practice these should always agree, since SharePoint item IDs are assigned in insertion
+    // order. Applied later, inside renderHelpChart()/renderHelpReasonChart()/renderHelpTable() —
+    // same unfiltered-base pattern as currentReportRows/renderMissingChart()/renderMissingTable().
+    const helpRowByRefEmail={};
     rows.forEach(r=>{
       const isHelpRow=Boolean(clean(r.HelpNote) || clean(r.ResponseSafe).toLowerCase()==="seehelpnote");
       if (!isHelpRow) return;
       const email=emailOf(r);
       if (!email || !r.Created) return;
+      const ref=clean(r.RefID)||"Unknown";
+      const key=ref+"|"+email;
       const t=new Date(r.Created);
-      if (!helpRowByEmail[email] || t<helpRowByEmail[email].time) helpRowByEmail[email]={time:t, row:r};
+      if (!helpRowByRefEmail[key] || t<helpRowByRefEmail[key].time) helpRowByRefEmail[key]={time:t, row:r, ref, email};
     });
-    currentHelpRows=Object.entries(helpRowByEmail).map(([email,{time,row}])=>{
+    currentHelpRows=Object.values(helpRowByRefEmail).map(({time,row,ref,email})=>{
       const pb=phoneBookByEmail[email];
       return {
         Email: pb ? (clean(pb.Email)||email) : (clean(row.EMail)||email),
+        RefID: ref,
         BU: clean(pb && pb.BU)||"ไม่ระบุ BU",
         Department: clean(pb && pb.Department)||"ไม่ระบุ Department",
         JobTitle: pb ? clean(pb.JobTitle) : "",
@@ -866,7 +884,7 @@
     const data=deptLabels.map(d=>countByDept[d]);
     if(helpChart) helpChart.destroy();
     helpChart=new Chart($("helpDeptChart"),{type:"bar",data:{labels:deptLabels,datasets:[
-      {label:"จำนวนผู้ขอความช่วยเหลือ (คนไม่ซ้ำ)",data,backgroundColor:"#d64545",borderRadius:4,maxBarThickness:28},
+      {label:"จำนวนคำขอความช่วยเหลือ (1 คนต่อ 1 ครั้งต่อ RefID)",data,backgroundColor:"#d64545",borderRadius:4,maxBarThickness:28},
     ]},options:{indexAxis:"y",responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:item=>`${item.parsed.x.toLocaleString('th-TH')} คน`}}},scales:{x:{beginAtZero:true,ticks:{precision:0}},y:{grid:{display:false}}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
       if (!elements.length) return;
       const dept=deptLabels[elements[0].index];
@@ -893,7 +911,7 @@
     const data=reasonKeys.map(k=>countByReason[k]||0);
     if(helpReasonChart) helpReasonChart.destroy();
     helpReasonChart=new Chart($("helpReasonChart"),{type:"bar",data:{labels,datasets:[
-      {label:"จำนวนผู้ขอความช่วยเหลือ (คนไม่ซ้ำ)",data,backgroundColor:["#d64545","#C5A153","#202B49","#8b8e91"],borderRadius:4,maxBarThickness:48},
+      {label:"จำนวนคำขอความช่วยเหลือ (1 คนต่อ 1 ครั้งต่อ RefID)",data,backgroundColor:["#d64545","#C5A153","#202B49","#8b8e91"],borderRadius:4,maxBarThickness:48},
     ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:item=>`${item.parsed.y.toLocaleString('th-TH')} คน`}}},scales:{x:{grid:{display:false}},y:{beginAtZero:true,ticks:{precision:0}}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
       if (!elements.length) return;
       const reasonKey=reasonKeys[elements[0].index];
@@ -932,7 +950,10 @@
   }
   function renderHelpTable() {
     const list=filterHelpRows();
-    const sorted=[...list].sort((a,b)=>clean(a.Email).localeCompare(clean(b.Email)));
+    // Sort by Email first, then RefID — since one person can now legitimately appear more than
+    // once (once per RefID they requested help in, see currentHelpRows' build comment above),
+    // this keeps that person's entries grouped together rather than scattered by date.
+    const sorted=[...list].sort((a,b)=>clean(a.Email).localeCompare(clean(b.Email)) || clean(a.RefID).localeCompare(clean(b.RefID)));
     const total=sorted.length;
     const totalPages=Math.max(1, Math.ceil(total/PAGE_SIZE));
     if (helpPage>totalPages) helpPage=totalPages;
@@ -950,12 +971,14 @@
     const anyFilterActive=Boolean(helpBuFilter||helpDeptFilter||helpStatusFilter||helpTypeFilter||helpBucketFilter!==null||helpReasonFilter);
     const filterNote=filterParts.length ? ` — กรองตาม ${filterParts.join(", ")}` : "";
     const rangeText=total ? `${startIdx+1}–${Math.min(startIdx+PAGE_SIZE,total)}` : "0";
-    $("helpSummary").innerHTML=`แสดง ${rangeText} จาก ${total.toLocaleString("th-TH")} คนที่ขอความช่วยเหลือ${filterNote}`;
+    // "รายการ" (records), not "คน" (people) — since RefID+Email grouping (not Email-only) means
+    // the same person can appear more than once under "All RefID" (see currentHelpRows above).
+    $("helpSummary").innerHTML=`แสดง ${rangeText} จาก ${total.toLocaleString("th-TH")} รายการขอความช่วยเหลือ${filterNote}`;
     show("clearHelpAllFiltersButton", anyFilterActive);
     $("helpTable").innerHTML=pageRows.map(p=>{
       const created=p.Created?escapeHtml(new Date(p.Created).toLocaleString("th-TH")):'-';
-      return `<tr><td>${escapeHtml(p.Email)||'-'}</td><td>${escapeHtml(p.BU)||'-'}</td><td>${escapeHtml(p.Department)||'-'}</td><td>${escapeHtml(p.JobTitle)||'-'}</td><td>${HELP_REASON_LABELS[p.Reason]}</td><td>${escapeHtml(p.HelpNote)||'-'}</td><td>${created}</td></tr>`;
-    }).join("") || `<tr><td colspan="7">${anyFilterActive?'ไม่พบข้อมูลที่ตรงกับตัวกรอง':'ไม่พบข้อมูล'}</td></tr>`;
+      return `<tr><td>${escapeHtml(p.Email)||'-'}</td><td>${escapeHtml(p.RefID)||'-'}</td><td>${escapeHtml(p.BU)||'-'}</td><td>${escapeHtml(p.Department)||'-'}</td><td>${escapeHtml(p.JobTitle)||'-'}</td><td>${HELP_REASON_LABELS[p.Reason]}</td><td>${escapeHtml(p.HelpNote)||'-'}</td><td>${created}</td></tr>`;
+    }).join("") || `<tr><td colspan="8">${anyFilterActive?'ไม่พบข้อมูลที่ตรงกับตัวกรอง':'ไม่พบข้อมูล'}</td></tr>`;
     $("helpPageIndicator").textContent=`หน้า ${helpPage} / ${totalPages}`;
     $("helpPrevPageButton").disabled=helpPage<=1;
     $("helpNextPageButton").disabled=helpPage>=totalPages;
@@ -964,9 +987,9 @@
     const list=filterHelpRows();
     if (!list.length) { setMessage("ไม่มีรายชื่อผู้ขอความช่วยเหลือตามตัวกรองปัจจุบัน", "error"); return; }
     const csvEscape=v=>{ const s=String(v ?? ""); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
-    const headers=["Email","BU","Department","JobTitle","Reason","HelpNote","Created"];
+    const headers=["Email","RefID","BU","Department","JobTitle","Reason","HelpNote","Created"];
     const lines=[headers.join(",")];
-    list.forEach(p=>{ lines.push([clean(p.Email), clean(p.BU), clean(p.Department), clean(p.JobTitle), HELP_REASON_LABELS[p.Reason], clean(p.HelpNote), p.Created?new Date(p.Created).toLocaleString("th-TH"):""].map(csvEscape).join(",")); });
+    list.forEach(p=>{ lines.push([clean(p.Email), clean(p.RefID), clean(p.BU), clean(p.Department), clean(p.JobTitle), HELP_REASON_LABELS[p.Reason], clean(p.HelpNote), p.Created?new Date(p.Created).toLocaleString("th-TH"):""].map(csvEscape).join(",")); });
     const blob=new Blob(["﻿"+lines.join("\r\n")], {type:"text/csv;charset=utf-8;"});
     downloadBlob(blob, `help-request-report-${exportTimestamp()}.csv`);
   }
