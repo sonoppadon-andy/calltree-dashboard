@@ -4,6 +4,16 @@
   let msalApp;
   let allRows = [];
   let allPhoneBook = []; // Master employee list from the "Phone Book" SharePoint site (see config.js)
+  // Mode filter (added 2026-09-27): narrows the "All RefID" dropdown's own option list to only the
+  // RefIDs whose Admin announcement row carries the selected Mode value — it does NOT change what
+  // "All RefID" itself shows once picked (that's still every row, unfiltered by Mode, same as
+  // before — see renderRefFilterOptions()/the modeFilterSelect listener below for the exact
+  // behavior this was scoped to). refModeMap/refMsgMap are (re)built once per loadData() by
+  // fillRefFilter(), then reused by renderRefFilterOptions() on every Mode change without needing
+  // to re-scan allRows.
+  let refModeMap = new Map(); // RefID -> Mode value (from the one Admin/notification row per RefID)
+  let refMsgMap = new Map(); // RefID -> iMsg preview text (moved here from fillRefFilter's own local scope so renderRefFilterOptions() can reuse it)
+  let modeFilterValue = ""; // "" = ทุก Mode
   let statusChart;
   let drillChart;
   let missingChart;
@@ -272,23 +282,50 @@
     return rows;
   }
   function fillRefFilter(rows) {
-    const select=$("refFilter"), previous=select.value;
-    const refMsg=new Map();
+    refMsgMap=new Map();
+    refModeMap=new Map();
     rows.forEach(r=>{
       const ref=clean(r.RefID);
       if (!ref) return;
-      if (!refMsg.has(ref)) refMsg.set(ref, "");
+      if (!refMsgMap.has(ref)) refMsgMap.set(ref, "");
       const msg=fieldText(r.iMsg);
-      if (msg && !refMsg.get(ref)) refMsg.set(ref, msg);
+      if (msg && !refMsgMap.get(ref)) refMsgMap.set(ref, msg);
+      // Mode is only populated on the Admin announcement row for that RefID (see
+      // isNotificationRow()'s own comment) — same "first non-blank value for this RefID wins" rule
+      // as iMsg above.
+      const mode=fieldText(r.Mode);
+      if (mode && !refModeMap.get(ref)) refModeMap.set(ref, mode);
     });
-    const refs=[...refMsg.keys()].sort((a,b)=>Number(b)-Number(a));
+    populateModeFilterSelect();
+    renderRefFilterOptions();
+  }
+  // Populates the Mode filter dropdown (added 2026-09-27) from the unique Mode values found across
+  // every RefID's own announcement row — independent of whatever RefID/Mode is currently selected,
+  // so the list of Mode choices itself never narrows.
+  function populateModeFilterSelect() {
+    const select=$("modeFilterSelect"), previous=select.value;
+    const modes=[...new Set(refModeMap.values())].sort((a,b)=>a.localeCompare(b));
+    select.innerHTML='<option value="">ทุก Mode</option>' + modes.map(m=>`<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join("");
+    if (modes.includes(previous)) select.value=previous;
+  }
+  // Rebuilds the "All RefID" dropdown's own option list (added 2026-09-27, refactored out of the
+  // old fillRefFilter() body): when modeFilterValue is set, only RefIDs whose own Mode matches are
+  // listed — "All RefID" itself stays as an option and, if picked, still scopes to every row exactly
+  // as before (Mode only narrows which RefIDs you can pick FROM, not what "All RefID" itself means —
+  // see the module-level comment above modeFilterValue's declaration). If the previously-selected
+  // RefID falls outside the new Mode's list, the selection resets to "all".
+  function renderRefFilterOptions() {
+    const select=$("refFilter"), previous=select.value;
+    let refs=[...refMsgMap.keys()];
+    if (modeFilterValue) refs=refs.filter(r=>refModeMap.get(r)===modeFilterValue);
+    refs.sort((a,b)=>Number(b)-Number(a));
     select.innerHTML='<option value="all">All RefID</option>' + refs.map(r=>{
-      const msg=refMsg.get(r);
+      const msg=refMsgMap.get(r);
       const msgShort=msg ? (msg.length>50 ? msg.slice(0,50)+"…" : msg) : "(ไม่มีข้อความ iMsg)";
       const label=`${r} — ${msgShort}`;
       return `<option value="${escapeHtml(r)}" title="${escapeHtml(msg||r)}">${escapeHtml(label)}</option>`;
     }).join("");
-    if (refs.includes(previous)) select.value=previous;
+    select.value=(previous==="all"||refs.includes(previous)) ? previous : "all";
   }
   // Drops every per-table/per-view filter state back to "no filter" — chart-click table filter,
   // column filters, page position, the Report tab's 5 filters, and the Dashboard's own 5 filters
@@ -1354,6 +1391,17 @@
   $("refreshButton").addEventListener("click",loadData);
   $("logoutButton").addEventListener("click",()=>{ if(msalApp) msalApp.logoutPopup({mainWindowRedirectUri:cfg.redirectUri}); });
   $("refFilter").addEventListener("change", ()=>{ resetAllFilters(); render(); });
+  // Mode filter (added 2026-09-27) only narrows refFilter's own option list — it is not itself a
+  // data-scope filter, so no render() call here beyond what renderRefFilterOptions()'s own
+  // possible RefID-selection reset already implies (handled by the resetAllFilters()+render() call
+  // below, exactly like a real refFilter change, since the effective RefID selection may have just
+  // changed too).
+  $("modeFilterSelect").addEventListener("change", e=>{
+    modeFilterValue=e.target.value||"";
+    renderRefFilterOptions();
+    resetAllFilters();
+    render();
+  });
   document.querySelectorAll(".col-filter").forEach(input=>{
     input.addEventListener("input", ()=>{
       columnFilters[input.dataset.col]=input.value.trim().toLowerCase();
