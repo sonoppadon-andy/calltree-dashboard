@@ -84,6 +84,11 @@
   let helpPage = 1;
   let helpChart;
   let helpReasonChart;
+  // Help tab now has 2 sub-tabs (added 2026-09-27, per user request): "ข้อมูลสรุปตาม KPI Dashboard"
+  // (KPI cards + the 2 existing charts) and "ตารางข้อมูลทั้งหมด" (the full undeduped table, unchanged).
+  // Both sub-tabs share the SAME filter-bar above them — helpSubTab only toggles which content is
+  // visible, it never changes what's counted/filtered.
+  let helpSubTab = "kpi"; // "kpi" | "table"
   // "รายงานผลการตอบคำถาม" tab (added 2026-09-27) — own independent filter bar (same 5
   // dimensions), own base row set. currentQuizRows holds ONE entry per (RefID, person) drill-
   // answer instance within the current RefID scope — same "first non-blank Drill Response wins"
@@ -685,6 +690,7 @@
     populateHelpFilterSelects(currentHelpRows);
     renderHelpChart();
     renderHelpReasonChart();
+    renderHelpKpi();
     show("clearHelpAllFiltersButton", Boolean(helpBuFilter||helpDeptFilter||helpStatusFilter||helpTypeFilter||helpBucketFilter!==null||helpReasonFilter));
     renderHelpTable();
     populateQuizFilterSelects(currentQuizRows);
@@ -882,6 +888,18 @@
     if (!excludeReason && helpReasonFilter) list=list.filter(p=>p.Reason===helpReasonFilter);
     return list;
   }
+  // Fills the 3 KPI cards on the "ข้อมูลสรุปตาม KPI Dashboard" sub-tab (added 2026-09-27). Applies
+  // ALL of the tab's own filters (like the table/export — no axis exclusion, since these cards
+  // aren't a chart axis): จำนวนคำขอความช่วยเหลือ uses currentHelpUniqueRows (1 ต่อ RefID+Email,
+  // matching the 2 charts' own counting basis); จำนวนรายการ HelpNote ทั้งหมด and จำนวน RefID ใช้
+  // currentHelpRows (ทุกแถวจริง ไม่ deduplicate — matching the table's own row count).
+  function renderHelpKpi() {
+    const uniqueList=baseHelpFilterList(currentHelpUniqueRows, false, false);
+    const rawList=baseHelpFilterList(currentHelpRows, false, false);
+    $("helpKpiUnique").textContent=uniqueList.length.toLocaleString("th-TH");
+    $("helpKpiRaw").textContent=rawList.length.toLocaleString("th-TH");
+    $("helpKpiRefCount").textContent=new Set(rawList.map(p=>p.RefID)).size.toLocaleString("th-TH");
+  }
   // Builds/rebuilds helpDeptChart (added 2026-09-27): unique help-requesters grouped by
   // Department, same "BU narrows / Department is the axis so it's excluded from the chart's own
   // narrowing" pattern as renderMissingChart() — helpDeptFilter is NOT applied here (only to the
@@ -906,6 +924,7 @@
       const deptSelect=$("helpDeptFilterSelect");
       if (deptSelect) deptSelect.value=helpDeptFilter||"";
       helpPage=1;
+      renderHelpKpi();
       renderHelpTable();
     }}});
   }
@@ -931,6 +950,7 @@
       const reasonKey=reasonKeys[elements[0].index];
       helpReasonFilter=(helpReasonFilter===reasonKey) ? null : reasonKey;
       helpPage=1;
+      renderHelpKpi();
       renderHelpTable();
     }}});
   }
@@ -1365,24 +1385,44 @@
     populateHelpFilterSelects(currentHelpRows);
     renderHelpChart();
     renderHelpReasonChart();
+    renderHelpKpi();
     renderHelpTable();
   });
   // Department narrows renderHelpChart's own axis (excluded there) but DOES narrow
   // renderHelpReasonChart (Reason isn't that chart's axis) — see baseHelpFilterList().
-  $("helpDeptFilterSelect").addEventListener("change", e=>{ helpDeptFilter=e.target.value||null; helpPage=1; renderHelpReasonChart(); renderHelpTable(); });
-  $("helpStatusFilterSelect").addEventListener("change", e=>{ helpStatusFilter=e.target.value||null; helpPage=1; renderHelpChart(); renderHelpReasonChart(); renderHelpTable(); });
-  $("helpTypeFilterSelect").addEventListener("change", e=>{ helpTypeFilter=e.target.value||null; helpPage=1; renderHelpChart(); renderHelpReasonChart(); renderHelpTable(); });
-  $("helpBucketFilterSelect").addEventListener("change", e=>{ helpBucketFilter=e.target.value===""?null:Number(e.target.value); helpPage=1; renderHelpChart(); renderHelpReasonChart(); renderHelpTable(); });
+  $("helpDeptFilterSelect").addEventListener("change", e=>{ helpDeptFilter=e.target.value||null; helpPage=1; renderHelpReasonChart(); renderHelpKpi(); renderHelpTable(); });
+  $("helpStatusFilterSelect").addEventListener("change", e=>{ helpStatusFilter=e.target.value||null; helpPage=1; renderHelpChart(); renderHelpReasonChart(); renderHelpKpi(); renderHelpTable(); });
+  $("helpTypeFilterSelect").addEventListener("change", e=>{ helpTypeFilter=e.target.value||null; helpPage=1; renderHelpChart(); renderHelpReasonChart(); renderHelpKpi(); renderHelpTable(); });
+  $("helpBucketFilterSelect").addEventListener("change", e=>{ helpBucketFilter=e.target.value===""?null:Number(e.target.value); helpPage=1; renderHelpChart(); renderHelpReasonChart(); renderHelpKpi(); renderHelpTable(); });
   $("clearHelpAllFiltersButton").addEventListener("click", ()=>{
     helpBuFilter=null; helpDeptFilter=null; helpStatusFilter=null; helpTypeFilter=null; helpBucketFilter=null; helpReasonFilter=null; helpPage=1;
     ["helpBuFilterSelect","helpDeptFilterSelect","helpStatusFilterSelect","helpTypeFilterSelect","helpBucketFilterSelect"].forEach(id=>{ $(id).value=""; });
     populateHelpFilterSelects(currentHelpRows);
     renderHelpChart();
     renderHelpReasonChart();
+    renderHelpKpi();
     renderHelpTable();
   });
   $("helpPrevPageButton").addEventListener("click", ()=>{ helpPage=Math.max(1,helpPage-1); renderHelpTable(); });
   $("helpNextPageButton").addEventListener("click", ()=>{ helpPage=helpPage+1; renderHelpTable(); });
+  // Sub-tab toggle (added 2026-09-27): "kpi" shows the KPI cards + 2 charts, "table" shows the full
+  // undeduped table. Filters/base data are shared and unaffected by which sub-tab is active.
+  function showHelpSubTab(tab) {
+    helpSubTab=tab;
+    show("helpSubViewKpi", tab==="kpi");
+    show("helpSubViewTable", tab==="table");
+    $("helpSubTabKpi").classList.toggle("active", tab==="kpi");
+    $("helpSubTabTable").classList.toggle("active", tab==="table");
+    // Chart.js sizes a canvas from its container at creation time — same 0×0-while-hidden gotcha as
+    // showView()'s own chart .resize() calls — so re-size both charts whenever the KPI sub-tab
+    // (which holds them) becomes visible again.
+    if (tab==="kpi") {
+      if (helpChart) helpChart.resize();
+      if (helpReasonChart) helpReasonChart.resize();
+    }
+  }
+  $("helpSubTabKpi").addEventListener("click", ()=>showHelpSubTab("kpi"));
+  $("helpSubTabTable").addEventListener("click", ()=>showHelpSubTab("table"));
   $("exportHelpCsvButton").addEventListener("click", exportHelpCsv);
   // "รายงานผลการตอบคำถาม" tab's own filter bar (added 2026-09-27) — same pattern; every filter
   // (including BU/Department, unlike the Help tab's chart) narrows the pie itself, so each change
