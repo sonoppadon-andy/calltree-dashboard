@@ -59,6 +59,40 @@
   let dashStatusFilter = null; // null (all) | "responded" | "missing"
   let dashTypeFilter = null; // null (all) | "management" | "staff"
   let dashBucketFilter = null; // null (all) | bucket-start minute (number, e.g. 0, 15, 30...)
+  // "รายงานขอความช่วยเหลือ" tab (added 2026-09-27) — own independent filter bar (same 5
+  // dimensions as Dashboard's), own base row set. currentHelpRows holds ONE entry per unique
+  // person (by email) who requested help within the current RefID scope (HelpNote text present,
+  // or ResponseSafe==="seehelpnote" — per the user's explicit "นับคนไม่ซ้ำ" decision, counted by
+  // person, not by row), tagged with BU/Department/JobTitle/Type (joined from the Phone Book) and
+  // their EARLIEST such row's Created/HelpNote text. Rebuilt every render(); helpChart/helpPage
+  // mirror missingChart/missingPage's own pattern (own chart instance, own pagination). The
+  // "แยกตามเหตุผลจากข้อความ" (reason-breakdown) chart is deliberately NOT built yet — the user
+  // chose to wait for real sample HelpNote text before designing that classifier (see
+  // #helpReasonPending in index.html) rather than guess keyword rules against unseen data.
+  let currentHelpRows = [];
+  let helpBuFilter = null;
+  let helpDeptFilter = null;
+  let helpStatusFilter = null; // null (all) | "responded" | "missing"
+  let helpTypeFilter = null; // null (all) | "management" | "staff"
+  let helpBucketFilter = null; // null (all) | bucket-start minute
+  let helpPage = 1;
+  let helpChart;
+  // "รายงานผลการตอบคำถาม" tab (added 2026-09-27) — own independent filter bar (same 5
+  // dimensions), own base row set. currentQuizRows holds ONE entry per (RefID, person) drill-
+  // answer instance within the current RefID scope — same "first non-blank Drill Response wins"
+  // rule as the existing "% ผู้ที่ตอบผิด" KPI — tagged with BU/Department/Type (joined from the
+  // Phone Book) and whether that answer was Correct (matches the RefID's Admin iMsg text) or not.
+  // quizCorrectFilter (set by clicking a pie slice) narrows the table to only-correct or
+  // only-wrong answers; quizPage mirrors missingPage's own pagination pattern.
+  let currentQuizRows = [];
+  let quizBuFilter = null;
+  let quizDeptFilter = null;
+  let quizStatusFilter = null; // null (all) | "responded" | "missing"
+  let quizTypeFilter = null; // null (all) | "management" | "staff"
+  let quizBucketFilter = null; // null (all) | bucket-start minute
+  let quizCorrectFilter = null; // null (all) | "correct" | "wrong"
+  let quizPage = 1;
+  let quizChart;
   const $ = id => document.getElementById(id);
   const show = (id, visible=true) => $(id).classList.toggle("hidden", !visible);
   const clean = value => String(value ?? "").trim();
@@ -231,8 +265,23 @@
     dashStatusFilter=null;
     dashTypeFilter=null;
     dashBucketFilter=null;
+    helpBuFilter=null;
+    helpDeptFilter=null;
+    helpStatusFilter=null;
+    helpTypeFilter=null;
+    helpBucketFilter=null;
+    helpPage=1;
+    quizBuFilter=null;
+    quizDeptFilter=null;
+    quizStatusFilter=null;
+    quizTypeFilter=null;
+    quizBucketFilter=null;
+    quizCorrectFilter=null;
+    quizPage=1;
     ["missingBuFilterSelect","missingDeptFilterSelect","missingStatusFilter","missingTypeFilterSelect","missingBucketFilterSelect",
-     "dashBuFilterSelect","dashDeptFilterSelect","dashStatusFilterSelect","dashTypeFilterSelect","dashBucketFilterSelect"].forEach(id=>{
+     "dashBuFilterSelect","dashDeptFilterSelect","dashStatusFilterSelect","dashTypeFilterSelect","dashBucketFilterSelect",
+     "helpBuFilterSelect","helpDeptFilterSelect","helpStatusFilterSelect","helpTypeFilterSelect","helpBucketFilterSelect",
+     "quizBuFilterSelect","quizDeptFilterSelect","quizStatusFilterSelect","quizTypeFilterSelect","quizBucketFilterSelect"].forEach(id=>{
       const el=$(id); if (el) el.value="";
     });
   }
@@ -300,6 +349,80 @@
     // section). This is what the Report tab and the Dashboard filter bar's own ตอบ/ไม่ตอบ filter
     // (below) both check against.
     const respondedEmailsAll=new Set(rows.map(emailOf).filter(Boolean));
+
+    // Admin announcement text (iMsg) per RefID — used by both the existing "% ผู้ที่ตอบผิด" KPI
+    // (below) and the new "รายงานผลการตอบคำถาม" tab's correct/wrong comparison (moved up here,
+    // 2026-09-27, so both can share the same computation instead of duplicating it).
+    const adminIMsgByRef={};
+    scoped.forEach(r=>{
+      if (!isNotificationRow(r)) return;
+      const key=clean(r.RefID)||"Unknown";
+      if (!(key in adminIMsgByRef)) adminIMsgByRef[key]=fieldText(r.iMsg).trim();
+    });
+
+    // ---- "รายงานขอความช่วยเหลือ" tab base data (added 2026-09-27) — every unique person (by
+    // email) who requested help within the current RefID scope, regardless of the Help tab's own
+    // filter bar (that's applied later, inside renderHelpChart()/renderHelpTable(), same
+    // unfiltered-base pattern as currentReportRows/renderMissingChart()/renderMissingTable()).
+    // Per the user's explicit "นับคนไม่ซ้ำ" decision: one row per person, keeping their EARLIEST
+    // qualifying row (by Created) if they have more than one.
+    const helpRowByEmail={};
+    rows.forEach(r=>{
+      const isHelpRow=Boolean(clean(r.HelpNote) || clean(r.ResponseSafe).toLowerCase()==="seehelpnote");
+      if (!isHelpRow) return;
+      const email=emailOf(r);
+      if (!email || !r.Created) return;
+      const t=new Date(r.Created);
+      if (!helpRowByEmail[email] || t<helpRowByEmail[email].time) helpRowByEmail[email]={time:t, row:r};
+    });
+    currentHelpRows=Object.entries(helpRowByEmail).map(([email,{time,row}])=>{
+      const pb=phoneBookByEmail[email];
+      return {
+        Email: pb ? (clean(pb.Email)||email) : (clean(row.EMail)||email),
+        BU: clean(pb && pb.BU)||"ไม่ระบุ BU",
+        Department: clean(pb && pb.Department)||"ไม่ระบุ Department",
+        JobTitle: pb ? clean(pb.JobTitle) : "",
+        Type: pb ? classifyJobType(pb.JobTitle) : null,
+        HelpNote: fieldText(row.HelpNote) || fieldText(row.ResponseSafe),
+        Created: time,
+        ResponseBucket: responseBucketByEmail[email] ?? null,
+      };
+    });
+
+    // ---- "รายงานผลการตอบคำถาม" tab base data (added 2026-09-27) — one entry per (RefID, person)
+    // drill-answer instance within the current RefID scope, using the SAME "first non-blank Drill
+    // Response wins" rule as the existing "% ผู้ที่ตอบผิด" KPI further below (built from `rows`,
+    // i.e. NOT scoped by the Dashboard's own filter bar — this tab has its own independent one,
+    // applied later inside renderQuizChart()/renderQuizTable(), same unfiltered-base pattern).
+    const quizFirstDrillByRefEmail={};
+    rows.forEach(r=>{
+      const drill=fieldText(r.DrillResponse).trim();
+      const email=emailOf(r);
+      if (!drill || !email || !r.Created) return;
+      const key=(clean(r.RefID)||"Unknown")+"|"+email;
+      const t=new Date(r.Created);
+      if (!quizFirstDrillByRefEmail[key] || t<quizFirstDrillByRefEmail[key].time) {
+        quizFirstDrillByRefEmail[key]={time:t, drill, ref:clean(r.RefID)||"Unknown", email};
+      }
+    });
+    currentQuizRows=Object.values(quizFirstDrillByRefEmail)
+      .filter(({ref})=>adminIMsgByRef[ref]!==undefined)
+      .map(({time,drill,ref,email})=>{
+        const pb=phoneBookByEmail[email];
+        return {
+          EmailKey: email,
+          Email: pb ? (clean(pb.Email)||email) : email,
+          RefID: ref,
+          BU: clean(pb && pb.BU)||"ไม่ระบุ BU",
+          Department: clean(pb && pb.Department)||"ไม่ระบุ Department",
+          Type: pb ? classifyJobType(pb.JobTitle) : null,
+          Correct: drill===adminIMsgByRef[ref],
+          DrillResponse: drill,
+          Created: time,
+          ResponseBucket: responseBucketByEmail[email] ?? null,
+        };
+      });
+    // ------------------------------------------------------------------------------------------
 
     // ---- Dashboard filter bar (BU / Department / ตอบ-ไม่ตอบ / Type / 15-minute bucket, added
     // 2026-09-25) — same 5 filters as the "รายงานผู้ที่ยังตอบรับ" tab's filter bar, but this one
@@ -381,12 +504,8 @@
     // among rows that actually have a Drill Response) is used. A blank Drill Response means the
     // member never answered the drill question, so they are excluded from both the numerator and
     // denominator (not counted as "wrong").
-    const adminIMsgByRef={};
-    scoped.forEach(r=>{
-      if (!isNotificationRow(r)) return;
-      const key=clean(r.RefID)||"Unknown";
-      if (!(key in adminIMsgByRef)) adminIMsgByRef[key]=fieldText(r.iMsg).trim();
-    });
+    // adminIMsgByRef is now computed earlier in render() (moved 2026-09-27 so the Quiz Answer
+    // Report tab's base data can reuse it too) — reused here as-is.
     const firstDrillByRefEmail={};
     dashRows.forEach(r=>{
       const drill=fieldText(r.DrillResponse).trim();
@@ -501,6 +620,14 @@
     currentRows=dashRows;
     renderTable();
     renderMissingTable();
+    populateHelpFilterSelects(currentHelpRows);
+    renderHelpChart();
+    show("clearHelpAllFiltersButton", Boolean(helpBuFilter||helpDeptFilter||helpStatusFilter||helpTypeFilter||helpBucketFilter!==null));
+    renderHelpTable();
+    populateQuizFilterSelects(currentQuizRows);
+    renderQuizChart();
+    show("clearQuizAllFiltersButton", Boolean(quizBuFilter||quizDeptFilter||quizStatusFilter||quizTypeFilter||quizBucketFilter!==null||quizCorrectFilter));
+    renderQuizTable();
   }
   // Builds/rebuilds missingChart: both series (responded vs. not-yet-responded) grouped by
   // Department (changed 2026-09-24, was grouped by BU) so the two counts sit on the same
@@ -670,6 +797,208 @@
     list.forEach(p=>{ lines.push([clean(p.Email), clean(p.BU), clean(p.Division), clean(p.JobTitle), clean(p.Department), p.Responded?"ตอบรับแล้ว":"ยังไม่ตอบรับ", p.ResponseTime?new Date(p.ResponseTime).toLocaleString("th-TH"):""].map(csvEscape).join(",")); });
     const blob=new Blob(["﻿"+lines.join("\r\n")], {type:"text/csv;charset=utf-8;"});
     downloadBlob(blob, `phonebook-report-${exportTimestamp()}.csv`);
+  }
+  // Builds/rebuilds helpDeptChart (added 2026-09-27): unique help-requesters grouped by
+  // Department, same "BU narrows / Department is the axis so it's excluded from the chart's own
+  // narrowing" pattern as renderMissingChart() — helpDeptFilter is NOT applied here (only to the
+  // table below), or picking a bar would immediately empty every other bar. ตอบ/ไม่ตอบ is included
+  // for filter-set consistency with the Dashboard's own bar, even though everyone in
+  // currentHelpRows has, by definition, already responded (so "missing" always yields an empty
+  // chart — expected, not a bug).
+  function renderHelpChart() {
+    let list=currentHelpRows;
+    if (helpBuFilter) list=list.filter(p=>p.BU===helpBuFilter);
+    if (helpTypeFilter) list=list.filter(p=>p.Type===helpTypeFilter);
+    if (helpBucketFilter!==null) list=list.filter(p=>p.ResponseBucket===helpBucketFilter);
+    if (helpStatusFilter==="missing") list=[];
+    const countByDept={};
+    list.forEach(p=>{ countByDept[p.Department]=(countByDept[p.Department]||0)+1; });
+    const deptLabels=Object.keys(countByDept).sort((a,b)=>countByDept[b]-countByDept[a]);
+    const data=deptLabels.map(d=>countByDept[d]);
+    if(helpChart) helpChart.destroy();
+    helpChart=new Chart($("helpDeptChart"),{type:"bar",data:{labels:deptLabels,datasets:[
+      {label:"จำนวนผู้ขอความช่วยเหลือ (คนไม่ซ้ำ)",data,backgroundColor:"#d64545",borderRadius:4,maxBarThickness:28},
+    ]},options:{indexAxis:"y",responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:item=>`${item.parsed.x.toLocaleString('th-TH')} คน`}}},scales:{x:{beginAtZero:true,ticks:{precision:0}},y:{grid:{display:false}}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
+      if (!elements.length) return;
+      const dept=deptLabels[elements[0].index];
+      helpDeptFilter=(helpDeptFilter===dept) ? null : dept;
+      const deptSelect=$("helpDeptFilterSelect");
+      if (deptSelect) deptSelect.value=helpDeptFilter||"";
+      helpPage=1;
+      renderHelpTable();
+    }}});
+  }
+  // Populates the Help tab's BU / Department / 15-minute-bucket dropdowns from currentHelpRows
+  // (help-requesters only, not the whole Phone Book) — same cascading-Department-by-BU pattern as
+  // populateReportFilterSelects()/populateDashFilterSelects().
+  function populateHelpFilterSelects(rows) {
+    const buSelect=$("helpBuFilterSelect"), deptSelect=$("helpDeptFilterSelect"), bucketSelect=$("helpBucketFilterSelect");
+    const buValues=[...new Set(rows.map(p=>p.BU))].sort((a,b)=>a.localeCompare(b));
+    const deptScope = helpBuFilter ? rows.filter(p=>p.BU===helpBuFilter) : rows;
+    const deptValues=[...new Set(deptScope.map(p=>p.Department))].sort((a,b)=>a.localeCompare(b));
+    const bucketValues=[...new Set(rows.map(p=>p.ResponseBucket).filter(b=>b!==null&&b!==undefined))].sort((a,b)=>a-b);
+    const prevBu=buSelect.value, prevDept=deptSelect.value, prevBucket=bucketSelect.value;
+    buSelect.innerHTML='<option value="">ทั้งหมด</option>'+buValues.map(v=>`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+    deptSelect.innerHTML='<option value="">ทั้งหมด</option>'+deptValues.map(v=>`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+    bucketSelect.innerHTML='<option value="">ทั้งหมด</option>'+bucketValues.map(b=>`<option value="${b}">${b}–${b+15} นาที</option>`).join("");
+    if (buValues.includes(prevBu)) buSelect.value=prevBu;
+    if (deptValues.includes(prevDept)) {
+      deptSelect.value=prevDept;
+    } else if (prevDept) {
+      deptSelect.value="";
+      helpDeptFilter=null;
+    }
+    if (bucketValues.some(b=>String(b)===prevBucket)) bucketSelect.value=prevBucket;
+  }
+  // Renders the Help Request Report table: currentHelpRows filtered by ALL 5 of the tab's own
+  // filters (unlike the chart above, helpDeptFilter DOES apply here — matching renderMissingTable()
+  // applying all 5 of its own filters while renderMissingChart() only applies BU).
+  function filterHelpRows() {
+    let list=currentHelpRows;
+    if (helpBuFilter) list=list.filter(p=>p.BU===helpBuFilter);
+    if (helpDeptFilter) list=list.filter(p=>p.Department===helpDeptFilter);
+    if (helpTypeFilter) list=list.filter(p=>p.Type===helpTypeFilter);
+    if (helpBucketFilter!==null) list=list.filter(p=>p.ResponseBucket===helpBucketFilter);
+    if (helpStatusFilter==="missing") list=[];
+    return list;
+  }
+  function renderHelpTable() {
+    const list=filterHelpRows();
+    const sorted=[...list].sort((a,b)=>clean(a.Email).localeCompare(clean(b.Email)));
+    const total=sorted.length;
+    const totalPages=Math.max(1, Math.ceil(total/PAGE_SIZE));
+    if (helpPage>totalPages) helpPage=totalPages;
+    if (helpPage<1) helpPage=1;
+    const startIdx=(helpPage-1)*PAGE_SIZE;
+    const pageRows=sorted.slice(startIdx, startIdx+PAGE_SIZE);
+
+    const filterParts=[];
+    if (helpBuFilter) filterParts.push(`BU: <strong>${escapeHtml(helpBuFilter)}</strong>`);
+    if (helpDeptFilter) filterParts.push(`Department: <strong>${escapeHtml(helpDeptFilter)}</strong>`);
+    if (helpStatusFilter) filterParts.push(`สถานะ: <strong>${helpStatusFilter==="responded"?"ตอบรับแล้ว":"ยังไม่ตอบรับ"}</strong>`);
+    if (helpTypeFilter) filterParts.push(`Type: <strong>${helpTypeFilter==="management"?"Management":"Staff"}</strong>`);
+    if (helpBucketFilter!==null) filterParts.push(`ช่วงเวลาตอบ: <strong>${helpBucketFilter}–${helpBucketFilter+15} นาที</strong>`);
+    const anyFilterActive=Boolean(helpBuFilter||helpDeptFilter||helpStatusFilter||helpTypeFilter||helpBucketFilter!==null);
+    const filterNote=filterParts.length ? ` — กรองตาม ${filterParts.join(", ")}` : "";
+    const rangeText=total ? `${startIdx+1}–${Math.min(startIdx+PAGE_SIZE,total)}` : "0";
+    $("helpSummary").innerHTML=`แสดง ${rangeText} จาก ${total.toLocaleString("th-TH")} คนที่ขอความช่วยเหลือ${filterNote}`;
+    show("clearHelpAllFiltersButton", anyFilterActive);
+    $("helpTable").innerHTML=pageRows.map(p=>{
+      const created=p.Created?escapeHtml(new Date(p.Created).toLocaleString("th-TH")):'-';
+      return `<tr><td>${escapeHtml(p.Email)||'-'}</td><td>${escapeHtml(p.BU)||'-'}</td><td>${escapeHtml(p.Department)||'-'}</td><td>${escapeHtml(p.JobTitle)||'-'}</td><td>${escapeHtml(p.HelpNote)||'-'}</td><td>${created}</td></tr>`;
+    }).join("") || `<tr><td colspan="6">${anyFilterActive?'ไม่พบข้อมูลที่ตรงกับตัวกรอง':'ไม่พบข้อมูล'}</td></tr>`;
+    $("helpPageIndicator").textContent=`หน้า ${helpPage} / ${totalPages}`;
+    $("helpPrevPageButton").disabled=helpPage<=1;
+    $("helpNextPageButton").disabled=helpPage>=totalPages;
+  }
+  function exportHelpCsv() {
+    const list=filterHelpRows();
+    if (!list.length) { setMessage("ไม่มีรายชื่อผู้ขอความช่วยเหลือตามตัวกรองปัจจุบัน", "error"); return; }
+    const csvEscape=v=>{ const s=String(v ?? ""); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
+    const headers=["Email","BU","Department","JobTitle","HelpNote","Created"];
+    const lines=[headers.join(",")];
+    list.forEach(p=>{ lines.push([clean(p.Email), clean(p.BU), clean(p.Department), clean(p.JobTitle), clean(p.HelpNote), p.Created?new Date(p.Created).toLocaleString("th-TH"):""].map(csvEscape).join(",")); });
+    const blob=new Blob(["﻿"+lines.join("\r\n")], {type:"text/csv;charset=utf-8;"});
+    downloadBlob(blob, `help-request-report-${exportTimestamp()}.csv`);
+  }
+  // Builds/rebuilds quizChart (added 2026-09-27): correct-vs-wrong pie over currentQuizRows,
+  // narrowed by all 5 of the Quiz tab's own filters (unlike the Help tab's chart, there's no
+  // "axis" here to exclude — Correct/Wrong is what's plotted, not Department — so quizDeptFilter
+  // DOES narrow this chart too, same as every other filter).
+  function filterQuizRowsForChart() {
+    let list=currentQuizRows;
+    if (quizBuFilter) list=list.filter(p=>p.BU===quizBuFilter);
+    if (quizDeptFilter) list=list.filter(p=>p.Department===quizDeptFilter);
+    if (quizTypeFilter) list=list.filter(p=>p.Type===quizTypeFilter);
+    if (quizBucketFilter!==null) list=list.filter(p=>p.ResponseBucket===quizBucketFilter);
+    if (quizStatusFilter==="missing") list=[];
+    return list;
+  }
+  function renderQuizChart() {
+    const list=filterQuizRowsForChart();
+    const correctCount=list.filter(p=>p.Correct).length;
+    const wrongCount=list.length-correctCount;
+    if(quizChart) quizChart.destroy();
+    quizChart=new Chart($("quizChart"),{type:"pie",data:{labels:["ตอบถูก","ตอบผิด"],datasets:[{data:[correctCount,wrongCount],backgroundColor:["#16845b","#d64545"],borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"bottom"},tooltip:{callbacks:{label:item=>`${item.label}: ${item.parsed.toLocaleString('th-TH')} คน`}}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
+      if (!elements.length) return;
+      const kind=elements[0].index===0 ? "correct" : "wrong";
+      quizCorrectFilter=(quizCorrectFilter===kind) ? null : kind;
+      quizPage=1;
+      renderQuizTable();
+    }}});
+  }
+  // Populates the Quiz tab's BU / Department / 15-minute-bucket dropdowns from currentQuizRows —
+  // same cascading pattern as populateHelpFilterSelects()/populateDashFilterSelects().
+  function populateQuizFilterSelects(rows) {
+    const buSelect=$("quizBuFilterSelect"), deptSelect=$("quizDeptFilterSelect"), bucketSelect=$("quizBucketFilterSelect");
+    const buValues=[...new Set(rows.map(p=>p.BU))].sort((a,b)=>a.localeCompare(b));
+    const deptScope = quizBuFilter ? rows.filter(p=>p.BU===quizBuFilter) : rows;
+    const deptValues=[...new Set(deptScope.map(p=>p.Department))].sort((a,b)=>a.localeCompare(b));
+    const bucketValues=[...new Set(rows.map(p=>p.ResponseBucket).filter(b=>b!==null&&b!==undefined))].sort((a,b)=>a-b);
+    const prevBu=buSelect.value, prevDept=deptSelect.value, prevBucket=bucketSelect.value;
+    buSelect.innerHTML='<option value="">ทั้งหมด</option>'+buValues.map(v=>`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+    deptSelect.innerHTML='<option value="">ทั้งหมด</option>'+deptValues.map(v=>`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+    bucketSelect.innerHTML='<option value="">ทั้งหมด</option>'+bucketValues.map(b=>`<option value="${b}">${b}–${b+15} นาที</option>`).join("");
+    if (buValues.includes(prevBu)) buSelect.value=prevBu;
+    if (deptValues.includes(prevDept)) {
+      deptSelect.value=prevDept;
+    } else if (prevDept) {
+      deptSelect.value="";
+      quizDeptFilter=null;
+    }
+    if (bucketValues.some(b=>String(b)===prevBucket)) bucketSelect.value=prevBucket;
+  }
+  // Renders the Quiz Answer Report table: currentQuizRows filtered by all 5 of the tab's own
+  // filters PLUS quizCorrectFilter (set by clicking a pie slice — not part of the filter bar, so
+  // it's applied on top, same relationship as activeFilter/columnFilters on the Latest Responses
+  // table).
+  function filterQuizRows() {
+    let list=filterQuizRowsForChart();
+    if (quizCorrectFilter==="correct") list=list.filter(p=>p.Correct);
+    else if (quizCorrectFilter==="wrong") list=list.filter(p=>!p.Correct);
+    return list;
+  }
+  function renderQuizTable() {
+    const list=filterQuizRows();
+    const sorted=[...list].sort((a,b)=>new Date(b.Created||0)-new Date(a.Created||0));
+    const total=sorted.length;
+    const totalPages=Math.max(1, Math.ceil(total/PAGE_SIZE));
+    if (quizPage>totalPages) quizPage=totalPages;
+    if (quizPage<1) quizPage=1;
+    const startIdx=(quizPage-1)*PAGE_SIZE;
+    const pageRows=sorted.slice(startIdx, startIdx+PAGE_SIZE);
+
+    const filterParts=[];
+    if (quizBuFilter) filterParts.push(`BU: <strong>${escapeHtml(quizBuFilter)}</strong>`);
+    if (quizDeptFilter) filterParts.push(`Department: <strong>${escapeHtml(quizDeptFilter)}</strong>`);
+    if (quizStatusFilter) filterParts.push(`สถานะ: <strong>${quizStatusFilter==="responded"?"ตอบรับแล้ว":"ยังไม่ตอบรับ"}</strong>`);
+    if (quizTypeFilter) filterParts.push(`Type: <strong>${quizTypeFilter==="management"?"Management":"Staff"}</strong>`);
+    if (quizBucketFilter!==null) filterParts.push(`ช่วงเวลาตอบ: <strong>${quizBucketFilter}–${quizBucketFilter+15} นาที</strong>`);
+    if (quizCorrectFilter) filterParts.push(`ตอบ: <strong>${quizCorrectFilter==="correct"?"ถูก":"ผิด"}</strong>`);
+    const anyFilterActive=Boolean(quizBuFilter||quizDeptFilter||quizStatusFilter||quizTypeFilter||quizBucketFilter!==null||quizCorrectFilter);
+    const filterNote=filterParts.length ? ` — กรองตาม ${filterParts.join(", ")}` : "";
+    const rangeText=total ? `${startIdx+1}–${Math.min(startIdx+PAGE_SIZE,total)}` : "0";
+    $("quizSummary").innerHTML=`แสดง ${rangeText} จาก ${total.toLocaleString("th-TH")} รายการ${filterNote}`;
+    show("clearQuizAllFiltersButton", anyFilterActive);
+    $("quizTable").innerHTML=pageRows.map(p=>{
+      const created=p.Created?escapeHtml(new Date(p.Created).toLocaleString("th-TH")):'-';
+      const typeLabel=p.Type==="management"?"Management":(p.Type==="staff"?"Staff":"-");
+      const correctBadge=p.Correct?'<span class="badge safe">ถูก</span>':'<span class="badge pending">ผิด</span>';
+      return `<tr><td>${escapeHtml(p.Email)||'-'}</td><td>${escapeHtml(p.RefID)||'-'}</td><td>${escapeHtml(p.BU)||'-'}</td><td>${escapeHtml(p.Department)||'-'}</td><td>${typeLabel}</td><td>${correctBadge}</td><td>${escapeHtml(p.DrillResponse)||'-'}</td><td>${created}</td></tr>`;
+    }).join("") || `<tr><td colspan="8">${anyFilterActive?'ไม่พบข้อมูลที่ตรงกับตัวกรอง':'ไม่พบข้อมูล'}</td></tr>`;
+    $("quizPageIndicator").textContent=`หน้า ${quizPage} / ${totalPages}`;
+    $("quizPrevPageButton").disabled=quizPage<=1;
+    $("quizNextPageButton").disabled=quizPage>=totalPages;
+  }
+  function exportQuizCsv() {
+    const list=filterQuizRows();
+    if (!list.length) { setMessage("ไม่มีข้อมูลผลการตอบคำถามตามตัวกรองปัจจุบัน", "error"); return; }
+    const csvEscape=v=>{ const s=String(v ?? ""); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
+    const headers=["Email","RefID","BU","Department","Type","ตอบ","DrillResponse","Created"];
+    const lines=[headers.join(",")];
+    list.forEach(p=>{ lines.push([clean(p.Email), clean(p.RefID), clean(p.BU), clean(p.Department), p.Type==="management"?"Management":(p.Type==="staff"?"Staff":""), p.Correct?"ถูก":"ผิด", clean(p.DrillResponse), p.Created?new Date(p.Created).toLocaleString("th-TH"):""].map(csvEscape).join(",")); });
+    const blob=new Blob(["﻿"+lines.join("\r\n")], {type:"text/csv;charset=utf-8;"});
+    downloadBlob(blob, `quiz-answer-report-${exportTimestamp()}.csv`);
   }
   // Text shown/matched for a row in a given Latest Responses column — shared by the per-column
   // filter inputs and by CSV/Excel export, so "what you filtered on" and "what you exported"
@@ -842,15 +1171,24 @@
   function showView(view) {
     show("viewDashboard", view==="dashboard");
     show("viewReport", view==="report");
+    show("viewHelp", view==="help");
+    show("viewQuiz", view==="quiz");
     $("navDashboard").classList.toggle("active", view==="dashboard");
     $("navReport").classList.toggle("active", view==="report");
-    // Chart.js sizes a canvas from its container at creation time. missingChart is (re)built by
-    // render() even while viewReport is hidden (display:none → 0×0), so it must be told to
-    // recalculate its size once the container actually becomes visible, or it stays blank/tiny.
+    $("navHelp").classList.toggle("active", view==="help");
+    $("navQuiz").classList.toggle("active", view==="quiz");
+    // Chart.js sizes a canvas from its container at creation time. missingChart/helpChart/
+    // quizChart are all (re)built by render() even while their own tab is hidden (display:none →
+    // 0×0), so each must be told to recalculate its size once its container actually becomes
+    // visible, or it stays blank/tiny.
     if (view==="report" && missingChart) missingChart.resize();
+    if (view==="help" && helpChart) helpChart.resize();
+    if (view==="quiz" && quizChart) quizChart.resize();
   }
   $("navDashboard").addEventListener("click", ()=>showView("dashboard"));
   $("navReport").addEventListener("click", ()=>showView("report"));
+  $("navHelp").addEventListener("click", ()=>showView("help"));
+  $("navQuiz").addEventListener("click", ()=>showView("quiz"));
   $("loginButton").addEventListener("click",login);
   $("refreshButton").addEventListener("click",loadData);
   $("logoutButton").addEventListener("click",()=>{ if(msalApp) msalApp.logoutPopup({mainWindowRedirectUri:cfg.redirectUri}); });
@@ -910,5 +1248,53 @@
     ["dashBuFilterSelect","dashDeptFilterSelect","dashStatusFilterSelect","dashTypeFilterSelect","dashBucketFilterSelect"].forEach(id=>{ $(id).value=""; });
     render();
   });
+  // "รายงานขอความช่วยเหลือ" tab's own filter bar (added 2026-09-27) — same "narrow renderX(), not
+  // the full render()" pattern as the Report tab's own listeners (this tab has its own base data
+  // already computed once per render(), so re-filtering it doesn't need a full re-render).
+  $("helpBuFilterSelect").addEventListener("change", e=>{
+    helpBuFilter=e.target.value||null;
+    helpPage=1;
+    populateHelpFilterSelects(currentHelpRows);
+    renderHelpChart();
+    renderHelpTable();
+  });
+  $("helpDeptFilterSelect").addEventListener("change", e=>{ helpDeptFilter=e.target.value||null; helpPage=1; renderHelpTable(); });
+  $("helpStatusFilterSelect").addEventListener("change", e=>{ helpStatusFilter=e.target.value||null; helpPage=1; renderHelpChart(); renderHelpTable(); });
+  $("helpTypeFilterSelect").addEventListener("change", e=>{ helpTypeFilter=e.target.value||null; helpPage=1; renderHelpChart(); renderHelpTable(); });
+  $("helpBucketFilterSelect").addEventListener("change", e=>{ helpBucketFilter=e.target.value===""?null:Number(e.target.value); helpPage=1; renderHelpChart(); renderHelpTable(); });
+  $("clearHelpAllFiltersButton").addEventListener("click", ()=>{
+    helpBuFilter=null; helpDeptFilter=null; helpStatusFilter=null; helpTypeFilter=null; helpBucketFilter=null; helpPage=1;
+    ["helpBuFilterSelect","helpDeptFilterSelect","helpStatusFilterSelect","helpTypeFilterSelect","helpBucketFilterSelect"].forEach(id=>{ $(id).value=""; });
+    populateHelpFilterSelects(currentHelpRows);
+    renderHelpChart();
+    renderHelpTable();
+  });
+  $("helpPrevPageButton").addEventListener("click", ()=>{ helpPage=Math.max(1,helpPage-1); renderHelpTable(); });
+  $("helpNextPageButton").addEventListener("click", ()=>{ helpPage=helpPage+1; renderHelpTable(); });
+  $("exportHelpCsvButton").addEventListener("click", exportHelpCsv);
+  // "รายงานผลการตอบคำถาม" tab's own filter bar (added 2026-09-27) — same pattern; every filter
+  // (including BU/Department, unlike the Help tab's chart) narrows the pie itself, so each change
+  // re-renders both the chart and the table.
+  $("quizBuFilterSelect").addEventListener("change", e=>{
+    quizBuFilter=e.target.value||null;
+    quizPage=1;
+    populateQuizFilterSelects(currentQuizRows);
+    renderQuizChart();
+    renderQuizTable();
+  });
+  $("quizDeptFilterSelect").addEventListener("change", e=>{ quizDeptFilter=e.target.value||null; quizPage=1; renderQuizChart(); renderQuizTable(); });
+  $("quizStatusFilterSelect").addEventListener("change", e=>{ quizStatusFilter=e.target.value||null; quizPage=1; renderQuizChart(); renderQuizTable(); });
+  $("quizTypeFilterSelect").addEventListener("change", e=>{ quizTypeFilter=e.target.value||null; quizPage=1; renderQuizChart(); renderQuizTable(); });
+  $("quizBucketFilterSelect").addEventListener("change", e=>{ quizBucketFilter=e.target.value===""?null:Number(e.target.value); quizPage=1; renderQuizChart(); renderQuizTable(); });
+  $("clearQuizAllFiltersButton").addEventListener("click", ()=>{
+    quizBuFilter=null; quizDeptFilter=null; quizStatusFilter=null; quizTypeFilter=null; quizBucketFilter=null; quizCorrectFilter=null; quizPage=1;
+    ["quizBuFilterSelect","quizDeptFilterSelect","quizStatusFilterSelect","quizTypeFilterSelect","quizBucketFilterSelect"].forEach(id=>{ $(id).value=""; });
+    populateQuizFilterSelects(currentQuizRows);
+    renderQuizChart();
+    renderQuizTable();
+  });
+  $("quizPrevPageButton").addEventListener("click", ()=>{ quizPage=Math.max(1,quizPage-1); renderQuizTable(); });
+  $("quizNextPageButton").addEventListener("click", ()=>{ quizPage=quizPage+1; renderQuizTable(); });
+  $("exportQuizCsvButton").addEventListener("click", exportQuizCsv);
   window.addEventListener("DOMContentLoaded",init);
 })();
