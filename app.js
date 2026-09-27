@@ -64,19 +64,22 @@
   // person (by email) who requested help within the current RefID scope (HelpNote text present,
   // or ResponseSafe==="seehelpnote" — per the user's explicit "นับคนไม่ซ้ำ" decision, counted by
   // person, not by row), tagged with BU/Department/JobTitle/Type (joined from the Phone Book) and
-  // their EARLIEST such row's Created/HelpNote text. Rebuilt every render(); helpChart/helpPage
-  // mirror missingChart/missingPage's own pattern (own chart instance, own pagination). The
-  // "แยกตามเหตุผลจากข้อความ" (reason-breakdown) chart is deliberately NOT built yet — the user
-  // chose to wait for real sample HelpNote text before designing that classifier (see
-  // #helpReasonPending in index.html) rather than guess keyword rules against unseen data.
+  // their EARLIEST such row's Created/HelpNote text/Reason. Rebuilt every render(); helpChart/
+  // helpPage mirror missingChart/missingPage's own pattern (own chart instance, own pagination).
+  // helpReasonFilter (set only by clicking a bar of helpReasonChart, not a filter-bar dropdown —
+  // same relationship as quizCorrectFilter below) narrows the table by the derived Reason bucket.
+  // See classifyHelpReason() (defined near classifyJobType()) for how Reason is derived — built
+  // 2026-09-27 from real HelpNote sample text the user provided, per the "Never Guess" policy.
   let currentHelpRows = [];
   let helpBuFilter = null;
   let helpDeptFilter = null;
   let helpStatusFilter = null; // null (all) | "responded" | "missing"
   let helpTypeFilter = null; // null (all) | "management" | "staff"
   let helpBucketFilter = null; // null (all) | bucket-start minute
+  let helpReasonFilter = null; // null (all) | "injury" | "trapped" | "lost" | "other"
   let helpPage = 1;
   let helpChart;
+  let helpReasonChart;
   // "รายงานผลการตอบคำถาม" tab (added 2026-09-27) — own independent filter bar (same 5
   // dimensions), own base row set. currentQuizRows holds ONE entry per (RefID, person) drill-
   // answer instance within the current RefID scope — same "first non-blank Drill Response wins"
@@ -150,6 +153,34 @@
     ];
     return managementPatterns.some(p => p.test(t)) ? "management" : "staff";
   }
+  // "เหตุผล" classifier for the Help Request Report's reason-breakdown chart (added 2026-09-27),
+  // built AFTER the user supplied real HelpNote sample text (per "Never Guess" — a keyword
+  // classifier was deliberately withheld until then, see the notes doc). The real data showed
+  // HelpNote is a multi-select checkbox field: its 3 fixed option strings — "บาดเจ็บ", "หลงทาง",
+  // "ติดในอาคาร" — appear verbatim as comma-joined substrings, often followed by free text and/or
+  // a ":โทร <phone> <name>" callback suffix the user appends themselves (e.g. "บาดเจ็บ, หลงทาง,
+  // ติดในอาคาร อยู่ชั้น40:โทร 086-897-5806 จอย"). A single person can tick more than one option in
+  // the same HelpNote.
+  //
+  // Per the user's explicit choice (asked directly, since this is exactly the kind of ambiguous
+  // business logic "Never Guess" says must be confirmed, not assumed): the reason-breakdown chart
+  // counts each PERSON under exactly ONE bucket — the most SEVERE reason they ticked — not one
+  // bucket per ticked option. Severity order (highest first), also confirmed with the user:
+  // บาดเจ็บ (injury) > ติดในอาคาร (trapped) > หลงทาง (lost) > อื่นๆ (none of the 3 keywords found —
+  // covers test/garbled entries like "ทดสอบ...", "Test Show log...", "หลงๆลืมๆ" seen in the real
+  // sample data, which do NOT literally contain the "หลงทาง" substring).
+  function classifyHelpReason(helpNote) {
+    const t = clean(helpNote);
+    if (t.includes("บาดเจ็บ")) return "injury";
+    if (t.includes("ติดในอาคาร")) return "trapped";
+    if (t.includes("หลงทาง")) return "lost";
+    return "other";
+  }
+  const HELP_REASON_LABELS = {injury:"บาดเจ็บ", lost:"หลงทาง", trapped:"ติดในอาคาร", other:"อื่นๆ"};
+  // Display order for the reason chart follows the order the user originally asked for
+  // ("บาดเจ็บ,หลงทาง ติดในอาคาร อื่นๆ"), which is NOT the same as the severity priority order above
+  // (that order only matters for picking ONE bucket per person, not for how the bars are laid out).
+  const HELP_REASON_ORDER = ["injury","lost","trapped","other"];
 
   function setMessage(message, kind="info") {
     const el=$("statusMessage"); el.textContent=message; el.className=`status ${kind}`; show("statusMessage", Boolean(message));
@@ -270,6 +301,7 @@
     helpStatusFilter=null;
     helpTypeFilter=null;
     helpBucketFilter=null;
+    helpReasonFilter=null;
     helpPage=1;
     quizBuFilter=null;
     quizDeptFilter=null;
@@ -384,6 +416,7 @@
         JobTitle: pb ? clean(pb.JobTitle) : "",
         Type: pb ? classifyJobType(pb.JobTitle) : null,
         HelpNote: fieldText(row.HelpNote) || fieldText(row.ResponseSafe),
+        Reason: classifyHelpReason(fieldText(row.HelpNote)),
         Created: time,
         ResponseBucket: responseBucketByEmail[email] ?? null,
       };
@@ -622,7 +655,8 @@
     renderMissingTable();
     populateHelpFilterSelects(currentHelpRows);
     renderHelpChart();
-    show("clearHelpAllFiltersButton", Boolean(helpBuFilter||helpDeptFilter||helpStatusFilter||helpTypeFilter||helpBucketFilter!==null));
+    renderHelpReasonChart();
+    show("clearHelpAllFiltersButton", Boolean(helpBuFilter||helpDeptFilter||helpStatusFilter||helpTypeFilter||helpBucketFilter!==null||helpReasonFilter));
     renderHelpTable();
     populateQuizFilterSelects(currentQuizRows);
     renderQuizChart();
@@ -798,19 +832,34 @@
     const blob=new Blob(["﻿"+lines.join("\r\n")], {type:"text/csv;charset=utf-8;"});
     downloadBlob(blob, `phonebook-report-${exportTimestamp()}.csv`);
   }
+  // Shared base filter for the Help tab's 2 charts + table (added 2026-09-27, refactored out of
+  // what used to be renderHelpChart()'s/filterHelpRows()'s own separate inline filtering when the
+  // reason-breakdown chart was added). BU/Type/15-min-bucket/ตอบ-ไม่ตอบ always apply; Department
+  // and Reason each apply UNLESS that dimension is the chart currently being built (same
+  // "an axis dimension doesn't narrow itself" rule as renderMissingChart() only applying BU, never
+  // Department, to itself) — excludeDept=true for helpDeptChart, excludeReason=true for
+  // helpReasonChart, both false for the table/CSV export (which apply every filter, including the
+  // chart-click-only helpDeptFilter/helpReasonFilter).
+  function baseHelpFilterList(excludeDept, excludeReason) {
+    let list=currentHelpRows;
+    if (helpBuFilter) list=list.filter(p=>p.BU===helpBuFilter);
+    if (!excludeDept && helpDeptFilter) list=list.filter(p=>p.Department===helpDeptFilter);
+    if (helpTypeFilter) list=list.filter(p=>p.Type===helpTypeFilter);
+    if (helpBucketFilter!==null) list=list.filter(p=>p.ResponseBucket===helpBucketFilter);
+    if (helpStatusFilter==="missing") list=[];
+    if (!excludeReason && helpReasonFilter) list=list.filter(p=>p.Reason===helpReasonFilter);
+    return list;
+  }
   // Builds/rebuilds helpDeptChart (added 2026-09-27): unique help-requesters grouped by
   // Department, same "BU narrows / Department is the axis so it's excluded from the chart's own
   // narrowing" pattern as renderMissingChart() — helpDeptFilter is NOT applied here (only to the
   // table below), or picking a bar would immediately empty every other bar. ตอบ/ไม่ตอบ is included
   // for filter-set consistency with the Dashboard's own bar, even though everyone in
   // currentHelpRows has, by definition, already responded (so "missing" always yields an empty
-  // chart — expected, not a bug).
+  // chart — expected, not a bug). helpReasonFilter DOES narrow this chart (Reason isn't this
+  // chart's own axis).
   function renderHelpChart() {
-    let list=currentHelpRows;
-    if (helpBuFilter) list=list.filter(p=>p.BU===helpBuFilter);
-    if (helpTypeFilter) list=list.filter(p=>p.Type===helpTypeFilter);
-    if (helpBucketFilter!==null) list=list.filter(p=>p.ResponseBucket===helpBucketFilter);
-    if (helpStatusFilter==="missing") list=[];
+    const list=baseHelpFilterList(true, false);
     const countByDept={};
     list.forEach(p=>{ countByDept[p.Department]=(countByDept[p.Department]||0)+1; });
     const deptLabels=Object.keys(countByDept).sort((a,b)=>countByDept[b]-countByDept[a]);
@@ -824,6 +873,31 @@
       helpDeptFilter=(helpDeptFilter===dept) ? null : dept;
       const deptSelect=$("helpDeptFilterSelect");
       if (deptSelect) deptSelect.value=helpDeptFilter||"";
+      helpPage=1;
+      renderHelpTable();
+    }}});
+  }
+  // Builds/rebuilds helpReasonChart (added 2026-09-27, once real HelpNote sample text was
+  // available — see classifyHelpReason() for the derivation rule and the severity-priority
+  // decision behind it): unique help-requesters grouped by Reason (บาดเจ็บ/หลงทาง/ติดในอาคาร/อื่นๆ,
+  // in HELP_REASON_ORDER — the order the user originally asked for, not the severity-priority
+  // order used to pick each person's single bucket). helpReasonFilter is NOT applied here (Reason
+  // is this chart's own axis — same rule as helpDeptFilter/helpDeptChart above); helpDeptFilter
+  // DOES narrow this chart.
+  function renderHelpReasonChart() {
+    const list=baseHelpFilterList(false, true);
+    const countByReason={injury:0, trapped:0, lost:0, other:0};
+    list.forEach(p=>{ countByReason[p.Reason]=(countByReason[p.Reason]||0)+1; });
+    const reasonKeys=HELP_REASON_ORDER;
+    const labels=reasonKeys.map(k=>HELP_REASON_LABELS[k]);
+    const data=reasonKeys.map(k=>countByReason[k]||0);
+    if(helpReasonChart) helpReasonChart.destroy();
+    helpReasonChart=new Chart($("helpReasonChart"),{type:"bar",data:{labels,datasets:[
+      {label:"จำนวนผู้ขอความช่วยเหลือ (คนไม่ซ้ำ)",data,backgroundColor:["#d64545","#C5A153","#202B49","#8b8e91"],borderRadius:4,maxBarThickness:48},
+    ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:item=>`${item.parsed.y.toLocaleString('th-TH')} คน`}}},scales:{x:{grid:{display:false}},y:{beginAtZero:true,ticks:{precision:0}}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
+      if (!elements.length) return;
+      const reasonKey=reasonKeys[elements[0].index];
+      helpReasonFilter=(helpReasonFilter===reasonKey) ? null : reasonKey;
       helpPage=1;
       renderHelpTable();
     }}});
@@ -854,13 +928,7 @@
   // filters (unlike the chart above, helpDeptFilter DOES apply here — matching renderMissingTable()
   // applying all 5 of its own filters while renderMissingChart() only applies BU).
   function filterHelpRows() {
-    let list=currentHelpRows;
-    if (helpBuFilter) list=list.filter(p=>p.BU===helpBuFilter);
-    if (helpDeptFilter) list=list.filter(p=>p.Department===helpDeptFilter);
-    if (helpTypeFilter) list=list.filter(p=>p.Type===helpTypeFilter);
-    if (helpBucketFilter!==null) list=list.filter(p=>p.ResponseBucket===helpBucketFilter);
-    if (helpStatusFilter==="missing") list=[];
-    return list;
+    return baseHelpFilterList(false, false);
   }
   function renderHelpTable() {
     const list=filterHelpRows();
@@ -878,15 +946,16 @@
     if (helpStatusFilter) filterParts.push(`สถานะ: <strong>${helpStatusFilter==="responded"?"ตอบรับแล้ว":"ยังไม่ตอบรับ"}</strong>`);
     if (helpTypeFilter) filterParts.push(`Type: <strong>${helpTypeFilter==="management"?"Management":"Staff"}</strong>`);
     if (helpBucketFilter!==null) filterParts.push(`ช่วงเวลาตอบ: <strong>${helpBucketFilter}–${helpBucketFilter+15} นาที</strong>`);
-    const anyFilterActive=Boolean(helpBuFilter||helpDeptFilter||helpStatusFilter||helpTypeFilter||helpBucketFilter!==null);
+    if (helpReasonFilter) filterParts.push(`เหตุผล: <strong>${HELP_REASON_LABELS[helpReasonFilter]}</strong>`);
+    const anyFilterActive=Boolean(helpBuFilter||helpDeptFilter||helpStatusFilter||helpTypeFilter||helpBucketFilter!==null||helpReasonFilter);
     const filterNote=filterParts.length ? ` — กรองตาม ${filterParts.join(", ")}` : "";
     const rangeText=total ? `${startIdx+1}–${Math.min(startIdx+PAGE_SIZE,total)}` : "0";
     $("helpSummary").innerHTML=`แสดง ${rangeText} จาก ${total.toLocaleString("th-TH")} คนที่ขอความช่วยเหลือ${filterNote}`;
     show("clearHelpAllFiltersButton", anyFilterActive);
     $("helpTable").innerHTML=pageRows.map(p=>{
       const created=p.Created?escapeHtml(new Date(p.Created).toLocaleString("th-TH")):'-';
-      return `<tr><td>${escapeHtml(p.Email)||'-'}</td><td>${escapeHtml(p.BU)||'-'}</td><td>${escapeHtml(p.Department)||'-'}</td><td>${escapeHtml(p.JobTitle)||'-'}</td><td>${escapeHtml(p.HelpNote)||'-'}</td><td>${created}</td></tr>`;
-    }).join("") || `<tr><td colspan="6">${anyFilterActive?'ไม่พบข้อมูลที่ตรงกับตัวกรอง':'ไม่พบข้อมูล'}</td></tr>`;
+      return `<tr><td>${escapeHtml(p.Email)||'-'}</td><td>${escapeHtml(p.BU)||'-'}</td><td>${escapeHtml(p.Department)||'-'}</td><td>${escapeHtml(p.JobTitle)||'-'}</td><td>${HELP_REASON_LABELS[p.Reason]}</td><td>${escapeHtml(p.HelpNote)||'-'}</td><td>${created}</td></tr>`;
+    }).join("") || `<tr><td colspan="7">${anyFilterActive?'ไม่พบข้อมูลที่ตรงกับตัวกรอง':'ไม่พบข้อมูล'}</td></tr>`;
     $("helpPageIndicator").textContent=`หน้า ${helpPage} / ${totalPages}`;
     $("helpPrevPageButton").disabled=helpPage<=1;
     $("helpNextPageButton").disabled=helpPage>=totalPages;
@@ -895,9 +964,9 @@
     const list=filterHelpRows();
     if (!list.length) { setMessage("ไม่มีรายชื่อผู้ขอความช่วยเหลือตามตัวกรองปัจจุบัน", "error"); return; }
     const csvEscape=v=>{ const s=String(v ?? ""); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
-    const headers=["Email","BU","Department","JobTitle","HelpNote","Created"];
+    const headers=["Email","BU","Department","JobTitle","Reason","HelpNote","Created"];
     const lines=[headers.join(",")];
-    list.forEach(p=>{ lines.push([clean(p.Email), clean(p.BU), clean(p.Department), clean(p.JobTitle), clean(p.HelpNote), p.Created?new Date(p.Created).toLocaleString("th-TH"):""].map(csvEscape).join(",")); });
+    list.forEach(p=>{ lines.push([clean(p.Email), clean(p.BU), clean(p.Department), clean(p.JobTitle), HELP_REASON_LABELS[p.Reason], clean(p.HelpNote), p.Created?new Date(p.Created).toLocaleString("th-TH"):""].map(csvEscape).join(",")); });
     const blob=new Blob(["﻿"+lines.join("\r\n")], {type:"text/csv;charset=utf-8;"});
     downloadBlob(blob, `help-request-report-${exportTimestamp()}.csv`);
   }
@@ -1183,6 +1252,7 @@
     // visible, or it stays blank/tiny.
     if (view==="report" && missingChart) missingChart.resize();
     if (view==="help" && helpChart) helpChart.resize();
+    if (view==="help" && helpReasonChart) helpReasonChart.resize();
     if (view==="quiz" && quizChart) quizChart.resize();
   }
   $("navDashboard").addEventListener("click", ()=>showView("dashboard"));
@@ -1256,17 +1326,21 @@
     helpPage=1;
     populateHelpFilterSelects(currentHelpRows);
     renderHelpChart();
+    renderHelpReasonChart();
     renderHelpTable();
   });
-  $("helpDeptFilterSelect").addEventListener("change", e=>{ helpDeptFilter=e.target.value||null; helpPage=1; renderHelpTable(); });
-  $("helpStatusFilterSelect").addEventListener("change", e=>{ helpStatusFilter=e.target.value||null; helpPage=1; renderHelpChart(); renderHelpTable(); });
-  $("helpTypeFilterSelect").addEventListener("change", e=>{ helpTypeFilter=e.target.value||null; helpPage=1; renderHelpChart(); renderHelpTable(); });
-  $("helpBucketFilterSelect").addEventListener("change", e=>{ helpBucketFilter=e.target.value===""?null:Number(e.target.value); helpPage=1; renderHelpChart(); renderHelpTable(); });
+  // Department narrows renderHelpChart's own axis (excluded there) but DOES narrow
+  // renderHelpReasonChart (Reason isn't that chart's axis) — see baseHelpFilterList().
+  $("helpDeptFilterSelect").addEventListener("change", e=>{ helpDeptFilter=e.target.value||null; helpPage=1; renderHelpReasonChart(); renderHelpTable(); });
+  $("helpStatusFilterSelect").addEventListener("change", e=>{ helpStatusFilter=e.target.value||null; helpPage=1; renderHelpChart(); renderHelpReasonChart(); renderHelpTable(); });
+  $("helpTypeFilterSelect").addEventListener("change", e=>{ helpTypeFilter=e.target.value||null; helpPage=1; renderHelpChart(); renderHelpReasonChart(); renderHelpTable(); });
+  $("helpBucketFilterSelect").addEventListener("change", e=>{ helpBucketFilter=e.target.value===""?null:Number(e.target.value); helpPage=1; renderHelpChart(); renderHelpReasonChart(); renderHelpTable(); });
   $("clearHelpAllFiltersButton").addEventListener("click", ()=>{
-    helpBuFilter=null; helpDeptFilter=null; helpStatusFilter=null; helpTypeFilter=null; helpBucketFilter=null; helpPage=1;
+    helpBuFilter=null; helpDeptFilter=null; helpStatusFilter=null; helpTypeFilter=null; helpBucketFilter=null; helpReasonFilter=null; helpPage=1;
     ["helpBuFilterSelect","helpDeptFilterSelect","helpStatusFilterSelect","helpTypeFilterSelect","helpBucketFilterSelect"].forEach(id=>{ $(id).value=""; });
     populateHelpFilterSelects(currentHelpRows);
     renderHelpChart();
+    renderHelpReasonChart();
     renderHelpTable();
   });
   $("helpPrevPageButton").addEventListener("click", ()=>{ helpPage=Math.max(1,helpPage-1); renderHelpTable(); });
