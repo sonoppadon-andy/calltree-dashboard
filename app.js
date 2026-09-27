@@ -89,6 +89,7 @@
   // Both sub-tabs share the SAME filter-bar above them — helpSubTab only toggles which content is
   // visible, it never changes what's counted/filtered.
   let helpSubTab = "kpi"; // "kpi" | "table"
+  let helpUniquePage = 1; // own pagination for the "รายละเอียดจำนวนคำขอความช่วยเหลือ" detail table on the KPI sub-tab
   // "รายงานผลการตอบคำถาม" tab (added 2026-09-27) — own independent filter bar (same 5
   // dimensions), own base row set. currentQuizRows holds ONE entry per (RefID, person) drill-
   // answer instance within the current RefID scope — same "first non-blank Drill Response wins"
@@ -319,6 +320,7 @@
     helpBucketFilter=null;
     helpReasonFilter=null;
     helpPage=1;
+    helpUniquePage=1;
     quizBuFilter=null;
     quizDeptFilter=null;
     quizStatusFilter=null;
@@ -691,6 +693,7 @@
     renderHelpChart();
     renderHelpReasonChart();
     renderHelpKpi();
+    renderHelpUniqueTable();
     show("clearHelpAllFiltersButton", Boolean(helpBuFilter||helpDeptFilter||helpStatusFilter||helpTypeFilter||helpBucketFilter!==null||helpReasonFilter));
     renderHelpTable();
     populateQuizFilterSelects(currentQuizRows);
@@ -900,6 +903,32 @@
     $("helpKpiRaw").textContent=rawList.length.toLocaleString("th-TH");
     $("helpKpiRefCount").textContent=new Set(rawList.map(p=>p.RefID)).size.toLocaleString("th-TH");
   }
+  // Detail table on the KPI sub-tab (added 2026-09-27, per user's example screenshot): shows the
+  // SAME base list the KPI card "จำนวนคำขอความช่วยเหลือ (1 คนต่อ 1 ครั้งต่อ RefID)" and the 2 charts
+  // count from — currentHelpUniqueRows (1 row per RefID+Email, earliest Created wins) — filtered by
+  // ALL of the tab's own filters (no axis exclusion, same as renderHelpKpi()). Columns match the
+  // user's example exactly (no ID column — that's the full/undeduped table's own distinguishing
+  // column on the "ตารางข้อมูลทั้งหมด" sub-tab, not this one). Own pagination (helpUniquePage),
+  // separate from the full table's helpPage.
+  function renderHelpUniqueTable() {
+    const list=baseHelpFilterList(currentHelpUniqueRows, false, false);
+    const sorted=[...list].sort((a,b)=>clean(a.Email).localeCompare(clean(b.Email)) || clean(a.RefID).localeCompare(clean(b.RefID)) || (a.Created-b.Created));
+    const total=sorted.length;
+    const totalPages=Math.max(1, Math.ceil(total/PAGE_SIZE));
+    if (helpUniquePage>totalPages) helpUniquePage=totalPages;
+    if (helpUniquePage<1) helpUniquePage=1;
+    const startIdx=(helpUniquePage-1)*PAGE_SIZE;
+    const pageRows=sorted.slice(startIdx, startIdx+PAGE_SIZE);
+    const rangeText=total ? `${startIdx+1}–${Math.min(startIdx+PAGE_SIZE,total)}` : "0";
+    $("helpUniqueSummary").textContent=`แสดง ${rangeText} จาก ${total.toLocaleString("th-TH")} รายการ`;
+    $("helpUniqueTable").innerHTML=pageRows.map(p=>{
+      const created=p.Created?escapeHtml(new Date(p.Created).toLocaleString("th-TH")):'-';
+      return `<tr><td>${escapeHtml(p.Email)||'-'}</td><td>${escapeHtml(p.RefID)||'-'}</td><td>${escapeHtml(p.BU)||'-'}</td><td>${escapeHtml(p.Department)||'-'}</td><td>${escapeHtml(p.JobTitle)||'-'}</td><td>${HELP_REASON_LABELS[p.Reason]}</td><td>${escapeHtml(p.HelpNote)||'-'}</td><td>${created}</td></tr>`;
+    }).join("") || `<tr><td colspan="8">ไม่พบข้อมูล</td></tr>`;
+    $("helpUniquePageIndicator").textContent=`หน้า ${helpUniquePage} / ${totalPages}`;
+    $("helpUniquePrevPageButton").disabled=helpUniquePage<=1;
+    $("helpUniqueNextPageButton").disabled=helpUniquePage>=totalPages;
+  }
   // Builds/rebuilds helpDeptChart (added 2026-09-27): unique help-requesters grouped by
   // Department, same "BU narrows / Department is the axis so it's excluded from the chart's own
   // narrowing" pattern as renderMissingChart() — helpDeptFilter is NOT applied here (only to the
@@ -924,7 +953,9 @@
       const deptSelect=$("helpDeptFilterSelect");
       if (deptSelect) deptSelect.value=helpDeptFilter||"";
       helpPage=1;
+      helpUniquePage=1;
       renderHelpKpi();
+      renderHelpUniqueTable();
       renderHelpTable();
     }}});
   }
@@ -950,7 +981,9 @@
       const reasonKey=reasonKeys[elements[0].index];
       helpReasonFilter=(helpReasonFilter===reasonKey) ? null : reasonKey;
       helpPage=1;
+      helpUniquePage=1;
       renderHelpKpi();
+      renderHelpUniqueTable();
       renderHelpTable();
     }}});
   }
@@ -1382,29 +1415,34 @@
   $("helpBuFilterSelect").addEventListener("change", e=>{
     helpBuFilter=e.target.value||null;
     helpPage=1;
+    helpUniquePage=1;
     populateHelpFilterSelects(currentHelpRows);
     renderHelpChart();
     renderHelpReasonChart();
     renderHelpKpi();
+    renderHelpUniqueTable();
     renderHelpTable();
   });
   // Department narrows renderHelpChart's own axis (excluded there) but DOES narrow
   // renderHelpReasonChart (Reason isn't that chart's axis) — see baseHelpFilterList().
-  $("helpDeptFilterSelect").addEventListener("change", e=>{ helpDeptFilter=e.target.value||null; helpPage=1; renderHelpReasonChart(); renderHelpKpi(); renderHelpTable(); });
-  $("helpStatusFilterSelect").addEventListener("change", e=>{ helpStatusFilter=e.target.value||null; helpPage=1; renderHelpChart(); renderHelpReasonChart(); renderHelpKpi(); renderHelpTable(); });
-  $("helpTypeFilterSelect").addEventListener("change", e=>{ helpTypeFilter=e.target.value||null; helpPage=1; renderHelpChart(); renderHelpReasonChart(); renderHelpKpi(); renderHelpTable(); });
-  $("helpBucketFilterSelect").addEventListener("change", e=>{ helpBucketFilter=e.target.value===""?null:Number(e.target.value); helpPage=1; renderHelpChart(); renderHelpReasonChart(); renderHelpKpi(); renderHelpTable(); });
+  $("helpDeptFilterSelect").addEventListener("change", e=>{ helpDeptFilter=e.target.value||null; helpPage=1; helpUniquePage=1; renderHelpReasonChart(); renderHelpKpi(); renderHelpUniqueTable(); renderHelpTable(); });
+  $("helpStatusFilterSelect").addEventListener("change", e=>{ helpStatusFilter=e.target.value||null; helpPage=1; helpUniquePage=1; renderHelpChart(); renderHelpReasonChart(); renderHelpKpi(); renderHelpUniqueTable(); renderHelpTable(); });
+  $("helpTypeFilterSelect").addEventListener("change", e=>{ helpTypeFilter=e.target.value||null; helpPage=1; helpUniquePage=1; renderHelpChart(); renderHelpReasonChart(); renderHelpKpi(); renderHelpUniqueTable(); renderHelpTable(); });
+  $("helpBucketFilterSelect").addEventListener("change", e=>{ helpBucketFilter=e.target.value===""?null:Number(e.target.value); helpPage=1; helpUniquePage=1; renderHelpChart(); renderHelpReasonChart(); renderHelpKpi(); renderHelpUniqueTable(); renderHelpTable(); });
   $("clearHelpAllFiltersButton").addEventListener("click", ()=>{
-    helpBuFilter=null; helpDeptFilter=null; helpStatusFilter=null; helpTypeFilter=null; helpBucketFilter=null; helpReasonFilter=null; helpPage=1;
+    helpBuFilter=null; helpDeptFilter=null; helpStatusFilter=null; helpTypeFilter=null; helpBucketFilter=null; helpReasonFilter=null; helpPage=1; helpUniquePage=1;
     ["helpBuFilterSelect","helpDeptFilterSelect","helpStatusFilterSelect","helpTypeFilterSelect","helpBucketFilterSelect"].forEach(id=>{ $(id).value=""; });
     populateHelpFilterSelects(currentHelpRows);
     renderHelpChart();
     renderHelpReasonChart();
     renderHelpKpi();
+    renderHelpUniqueTable();
     renderHelpTable();
   });
   $("helpPrevPageButton").addEventListener("click", ()=>{ helpPage=Math.max(1,helpPage-1); renderHelpTable(); });
   $("helpNextPageButton").addEventListener("click", ()=>{ helpPage=helpPage+1; renderHelpTable(); });
+  $("helpUniquePrevPageButton").addEventListener("click", ()=>{ helpUniquePage=Math.max(1,helpUniquePage-1); renderHelpUniqueTable(); });
+  $("helpUniqueNextPageButton").addEventListener("click", ()=>{ helpUniquePage=helpUniquePage+1; renderHelpUniqueTable(); });
   // Sub-tab toggle (added 2026-09-27): "kpi" shows the KPI cards + 2 charts, "table" shows the full
   // undeduped table. Filters/base data are shared and unaffected by which sub-tab is active.
   function showHelpSubTab(tab) {
