@@ -59,18 +59,22 @@
   let dashStatusFilter = null; // null (all) | "responded" | "missing"
   let dashTypeFilter = null; // null (all) | "management" | "staff"
   let dashBucketFilter = null; // null (all) | bucket-start minute (number, e.g. 0, 15, 30...)
-  // "รายงานขอความช่วยเหลือ" tab (added 2026-09-27) — own independent filter bar (same 5
-  // dimensions as Dashboard's), own base row set. currentHelpRows holds ONE entry per unique
-  // person (by email) who requested help within the current RefID scope (HelpNote text present,
-  // or ResponseSafe==="seehelpnote" — per the user's explicit "นับคนไม่ซ้ำ" decision, counted by
-  // person, not by row), tagged with BU/Department/JobTitle/Type (joined from the Phone Book) and
-  // their EARLIEST such row's Created/HelpNote text/Reason. Rebuilt every render(); helpChart/
-  // helpPage mirror missingChart/missingPage's own pattern (own chart instance, own pagination).
-  // helpReasonFilter (set only by clicking a bar of helpReasonChart, not a filter-bar dropdown —
-  // same relationship as quizCorrectFilter below) narrows the table by the derived Reason bucket.
-  // See classifyHelpReason() (defined near classifyJobType()) for how Reason is derived — built
-  // 2026-09-27 from real HelpNote sample text the user provided, per the "Never Guess" policy.
+  // "รายงานขอความช่วยเหลือ" tab (added 2026-09-27, revised 3rd pass same day) — own independent
+  // filter bar (same 5 dimensions as Dashboard's). TWO base arrays, per the user's explicit
+  // correction that the table must show every real SharePoint row (not collapsed) while the chart
+  // counts must still collapse to one per (RefID, Email):
+  //   - currentHelpRows: EVERY individual row (own `ID`) with HelpNote content — used by the
+  //     table/CSV export, undeduped.
+  //   - currentHelpUniqueRows: the same rows collapsed to one per (RefID, Email) — EARLIEST
+  //     Created wins — used ONLY by renderHelpChart()/renderHelpReasonChart()'s counts.
+  // Both tagged with BU/Department/JobTitle/Type (joined from the Phone Book) and Reason (see
+  // classifyHelpReason(), built from real HelpNote sample text per "Never Guess"). Rebuilt every
+  // render(); helpChart/helpPage mirror missingChart/missingPage's own pattern (own chart
+  // instance, own pagination). helpReasonFilter (set only by clicking a bar of helpReasonChart,
+  // not a filter-bar dropdown — same relationship as quizCorrectFilter below) narrows the table by
+  // the derived Reason bucket.
   let currentHelpRows = [];
+  let currentHelpUniqueRows = [];
   let helpBuFilter = null;
   let helpDeptFilter = null;
   let helpStatusFilter = null; // null (all) | "responded" | "missing"
@@ -399,46 +403,53 @@
       if (!(key in adminIMsgByRef)) adminIMsgByRef[key]=fieldText(r.iMsg).trim();
     });
 
-    // ---- "รายงานขอความช่วยเหลือ" tab base data — REVISED 2026-09-27 (2nd pass) per the user's
-    // explicit correction: grouping is by (RefID, Email), NOT by Email alone — someone who
-    // requested help in TWO DIFFERENT RefIDs (relevant under "All RefID") now shows as two
-    // separate entries, one per RefID, instead of being collapsed into a single overall-earliest
-    // row (the earlier Email-only dedup was why the table looked incomplete — it was silently
-    // dropping a person's help request in every RefID except their overall-first one). Within the
-    // SAME RefID, a person who submitted more than one qualifying row is still collapsed to ONE
-    // entry — "นับการตอบ ID แรกของ Email" — interpreted as the EARLIEST Created row for that
-    // (RefID, Email) pair, same "first/earliest wins" tie-break convention used everywhere else in
-    // this file (firstDrillByRefEmail, earliestResponseByEmail, etc.); flag it if "ID แรก" was
-    // meant as literally the smallest SharePoint item ID instead of earliest submission time — in
-    // practice these should always agree, since SharePoint item IDs are assigned in insertion
-    // order. Applied later, inside renderHelpChart()/renderHelpReasonChart()/renderHelpTable() —
-    // same unfiltered-base pattern as currentReportRows/renderMissingChart()/renderMissingTable().
-    const helpRowByRefEmail={};
+    // ---- "รายงานขอความช่วยเหลือ" tab base data — REVISED 2026-09-27 (3rd pass) per the user's
+    // explicit correction, with a real SharePoint screenshot showing multiple distinct HelpNote
+    // rows (different `ID`s) for the SAME email within the SAME RefID (e.g. sarinya.n@... has
+    // BOTH ID 884 and ID 962 under RefID 876 — two separate, real help requests, not a duplicate).
+    // This means TWO different things were being conflated before and now need TWO different base
+    // arrays:
+    //   - `currentHelpRows` — EVERY individual SharePoint list row (by its real `ID`) that has
+    //     HelpNote content, completely UNDEDUPED — this is what the TABLE/CSV export show, per the
+    //     user's explicit "ในตารางแสดงข้อมูลที่มี HelpNoted ทั้งหมด ไม่ตัด" (show ALL HelpNote
+    //     records in the table, don't cut/collapse them) — filtered by the tab's own filter bar
+    //     only, nothing else.
+    //   - `currentHelpUniqueRows` — the SAME rows collapsed to one per (RefID, Email) — keeping
+    //     only the EARLIEST (`Created` ascending — "ID แรก", interpreted as earliest submission
+    //     time, same "first/earliest wins" convention as `firstDrillByRefEmail`/
+    //     `earliestResponseByEmail` elsewhere in this file; flag it if "ID แรก" was meant as
+    //     literally the smallest SharePoint item ID instead — in practice these should agree,
+    //     since item IDs are assigned in insertion order) — used ONLY by the 2 charts'
+    //     unique-person counts (`renderHelpChart()`/`renderHelpReasonChart()`), per the user's
+    //     earlier explicit "นับการตอบ ID แรกของ Email" counting rule. The table is NEVER built
+    //     from this deduped set — only the charts are.
+    currentHelpRows=[];
     rows.forEach(r=>{
       const isHelpRow=Boolean(clean(r.HelpNote) || clean(r.ResponseSafe).toLowerCase()==="seehelpnote");
       if (!isHelpRow) return;
       const email=emailOf(r);
       if (!email || !r.Created) return;
-      const ref=clean(r.RefID)||"Unknown";
-      const key=ref+"|"+email;
-      const t=new Date(r.Created);
-      if (!helpRowByRefEmail[key] || t<helpRowByRefEmail[key].time) helpRowByRefEmail[key]={time:t, row:r, ref, email};
-    });
-    currentHelpRows=Object.values(helpRowByRefEmail).map(({time,row,ref,email})=>{
       const pb=phoneBookByEmail[email];
-      return {
-        Email: pb ? (clean(pb.Email)||email) : (clean(row.EMail)||email),
-        RefID: ref,
+      currentHelpRows.push({
+        ID: r.ID,
+        RefID: clean(r.RefID)||"Unknown",
+        Email: pb ? (clean(pb.Email)||email) : (clean(r.EMail)||email),
         BU: clean(pb && pb.BU)||"ไม่ระบุ BU",
         Department: clean(pb && pb.Department)||"ไม่ระบุ Department",
         JobTitle: pb ? clean(pb.JobTitle) : "",
         Type: pb ? classifyJobType(pb.JobTitle) : null,
-        HelpNote: fieldText(row.HelpNote) || fieldText(row.ResponseSafe),
-        Reason: classifyHelpReason(fieldText(row.HelpNote)),
-        Created: time,
+        HelpNote: fieldText(r.HelpNote) || fieldText(r.ResponseSafe),
+        Reason: classifyHelpReason(fieldText(r.HelpNote)),
+        Created: new Date(r.Created),
         ResponseBucket: responseBucketByEmail[email] ?? null,
-      };
+      });
     });
+    const helpUniqueByRefEmail={};
+    currentHelpRows.forEach(p=>{
+      const key=p.RefID+"|"+p.Email.toLowerCase();
+      if (!helpUniqueByRefEmail[key] || p.Created<helpUniqueByRefEmail[key].Created) helpUniqueByRefEmail[key]=p;
+    });
+    currentHelpUniqueRows=Object.values(helpUniqueByRefEmail);
 
     // ---- "รายงานผลการตอบคำถาม" tab base data (added 2026-09-27) — one entry per (RefID, person)
     // drill-answer instance within the current RefID scope, using the SAME "first non-blank Drill
@@ -857,9 +868,12 @@
   // "an axis dimension doesn't narrow itself" rule as renderMissingChart() only applying BU, never
   // Department, to itself) — excludeDept=true for helpDeptChart, excludeReason=true for
   // helpReasonChart, both false for the table/CSV export (which apply every filter, including the
-  // chart-click-only helpDeptFilter/helpReasonFilter).
-  function baseHelpFilterList(excludeDept, excludeReason) {
-    let list=currentHelpRows;
+  // chart-click-only helpDeptFilter/helpReasonFilter). `sourceRows` is which base array to filter —
+  // callers MUST pass `currentHelpUniqueRows` for the 2 charts (one count per RefID+Email) and
+  // `currentHelpRows` for the table/export (every real row, undeduped) — see the module-level
+  // comment above `currentHelpRows`'s declaration for why these are two different arrays.
+  function baseHelpFilterList(sourceRows, excludeDept, excludeReason) {
+    let list=sourceRows;
     if (helpBuFilter) list=list.filter(p=>p.BU===helpBuFilter);
     if (!excludeDept && helpDeptFilter) list=list.filter(p=>p.Department===helpDeptFilter);
     if (helpTypeFilter) list=list.filter(p=>p.Type===helpTypeFilter);
@@ -877,7 +891,7 @@
   // chart — expected, not a bug). helpReasonFilter DOES narrow this chart (Reason isn't this
   // chart's own axis).
   function renderHelpChart() {
-    const list=baseHelpFilterList(true, false);
+    const list=baseHelpFilterList(currentHelpUniqueRows, true, false);
     const countByDept={};
     list.forEach(p=>{ countByDept[p.Department]=(countByDept[p.Department]||0)+1; });
     const deptLabels=Object.keys(countByDept).sort((a,b)=>countByDept[b]-countByDept[a]);
@@ -903,7 +917,7 @@
   // is this chart's own axis — same rule as helpDeptFilter/helpDeptChart above); helpDeptFilter
   // DOES narrow this chart.
   function renderHelpReasonChart() {
-    const list=baseHelpFilterList(false, true);
+    const list=baseHelpFilterList(currentHelpUniqueRows, false, true);
     const countByReason={injury:0, trapped:0, lost:0, other:0};
     list.forEach(p=>{ countByReason[p.Reason]=(countByReason[p.Reason]||0)+1; });
     const reasonKeys=HELP_REASON_ORDER;
@@ -946,14 +960,15 @@
   // filters (unlike the chart above, helpDeptFilter DOES apply here — matching renderMissingTable()
   // applying all 5 of its own filters while renderMissingChart() only applies BU).
   function filterHelpRows() {
-    return baseHelpFilterList(false, false);
+    return baseHelpFilterList(currentHelpRows, false, false);
   }
   function renderHelpTable() {
     const list=filterHelpRows();
-    // Sort by Email first, then RefID — since one person can now legitimately appear more than
-    // once (once per RefID they requested help in, see currentHelpRows' build comment above),
-    // this keeps that person's entries grouped together rather than scattered by date.
-    const sorted=[...list].sort((a,b)=>clean(a.Email).localeCompare(clean(b.Email)) || clean(a.RefID).localeCompare(clean(b.RefID)));
+    // Sort by Email, then RefID, then Created — currentHelpRows is now completely undeduped (one
+    // row per real SharePoint `ID`), so the same person can have several rows even within a single
+    // RefID (see the module-level comment above currentHelpRows' declaration) — this keeps a
+    // person's entries grouped together and chronological within that grouping.
+    const sorted=[...list].sort((a,b)=>clean(a.Email).localeCompare(clean(b.Email)) || clean(a.RefID).localeCompare(clean(b.RefID)) || (a.Created-b.Created));
     const total=sorted.length;
     const totalPages=Math.max(1, Math.ceil(total/PAGE_SIZE));
     if (helpPage>totalPages) helpPage=totalPages;
@@ -977,8 +992,8 @@
     show("clearHelpAllFiltersButton", anyFilterActive);
     $("helpTable").innerHTML=pageRows.map(p=>{
       const created=p.Created?escapeHtml(new Date(p.Created).toLocaleString("th-TH")):'-';
-      return `<tr><td>${escapeHtml(p.Email)||'-'}</td><td>${escapeHtml(p.RefID)||'-'}</td><td>${escapeHtml(p.BU)||'-'}</td><td>${escapeHtml(p.Department)||'-'}</td><td>${escapeHtml(p.JobTitle)||'-'}</td><td>${HELP_REASON_LABELS[p.Reason]}</td><td>${escapeHtml(p.HelpNote)||'-'}</td><td>${created}</td></tr>`;
-    }).join("") || `<tr><td colspan="8">${anyFilterActive?'ไม่พบข้อมูลที่ตรงกับตัวกรอง':'ไม่พบข้อมูล'}</td></tr>`;
+      return `<tr><td>${escapeHtml(p.ID)}</td><td>${escapeHtml(p.Email)||'-'}</td><td>${escapeHtml(p.RefID)||'-'}</td><td>${escapeHtml(p.BU)||'-'}</td><td>${escapeHtml(p.Department)||'-'}</td><td>${escapeHtml(p.JobTitle)||'-'}</td><td>${HELP_REASON_LABELS[p.Reason]}</td><td>${escapeHtml(p.HelpNote)||'-'}</td><td>${created}</td></tr>`;
+    }).join("") || `<tr><td colspan="9">${anyFilterActive?'ไม่พบข้อมูลที่ตรงกับตัวกรอง':'ไม่พบข้อมูล'}</td></tr>`;
     $("helpPageIndicator").textContent=`หน้า ${helpPage} / ${totalPages}`;
     $("helpPrevPageButton").disabled=helpPage<=1;
     $("helpNextPageButton").disabled=helpPage>=totalPages;
@@ -987,9 +1002,9 @@
     const list=filterHelpRows();
     if (!list.length) { setMessage("ไม่มีรายชื่อผู้ขอความช่วยเหลือตามตัวกรองปัจจุบัน", "error"); return; }
     const csvEscape=v=>{ const s=String(v ?? ""); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
-    const headers=["Email","RefID","BU","Department","JobTitle","Reason","HelpNote","Created"];
+    const headers=["ID","Email","RefID","BU","Department","JobTitle","Reason","HelpNote","Created"];
     const lines=[headers.join(",")];
-    list.forEach(p=>{ lines.push([clean(p.Email), clean(p.RefID), clean(p.BU), clean(p.Department), clean(p.JobTitle), HELP_REASON_LABELS[p.Reason], clean(p.HelpNote), p.Created?new Date(p.Created).toLocaleString("th-TH"):""].map(csvEscape).join(",")); });
+    list.forEach(p=>{ lines.push([p.ID, clean(p.Email), clean(p.RefID), clean(p.BU), clean(p.Department), clean(p.JobTitle), HELP_REASON_LABELS[p.Reason], clean(p.HelpNote), p.Created?new Date(p.Created).toLocaleString("th-TH"):""].map(csvEscape).join(",")); });
     const blob=new Blob(["﻿"+lines.join("\r\n")], {type:"text/csv;charset=utf-8;"});
     downloadBlob(blob, `help-request-report-${exportTimestamp()}.csv`);
   }
