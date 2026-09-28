@@ -1,6 +1,11 @@
 (() => {
   "use strict";
   const cfg = window.CALLTREE_CONFIG;
+  // chartjs-plugin-datalabels (added 2026-09-28, per user request: "ให้มี Value และ % แสดงใน
+  // Graph ทุก menu") — registered globally once here, then every Chart below turns it on
+  // explicitly via its own options.plugins.datalabels (see chartValuePercentLabel() further down
+  // for the shared "value (percent%)" formatting rule all charts use).
+  if (window.Chart && window.ChartDataLabels) Chart.register(window.ChartDataLabels);
   let msalApp;
   let allRows = [];
   let allPhoneBook = []; // Master employee list from the "Phone Book" SharePoint site (see config.js)
@@ -121,6 +126,33 @@
   const clean = value => String(value ?? "").trim();
   const escapeHtml = value => clean(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
   const isSafe = row => clean(row.ResponseSafe).toLowerCase() === "iamsafe";
+  // Shared "Value และ %" label rule for every chart's own datalabels plugin (added 2026-09-28).
+  // `total` is the chart's own grand total (sum of every value shown in it — across all datasets,
+  // for a multi-series bar chart like missingChart) so the % always reads as "this slice/bar's
+  // share of everything drawn in this one chart", the same rule for every chart menu-wide. Returns
+  // "" (no label) for a zero value so empty bars/categories don't get a cluttering "0 (0.0%)".
+  function chartValuePercentLabel(value, total) {
+    const n=Number(value)||0;
+    if (!n) return "";
+    const pct=total ? (n/total*100) : 0;
+    return `${n.toLocaleString("th-TH")} (${pct.toFixed(1)}%)`;
+  }
+  // Builds the options.plugins.datalabels block for a chart whose Chart.js instance is `chart` —
+  // `total` is that chart's own grand total (computed once by the caller, since some charts sum
+  // across >1 dataset). `extra` merges in per-chart overrides (anchor/align/color) the 6 charts
+  // below each need for their own bar orientation (vertical vs. indexAxis:"y") or their own
+  // background (doughnut/pie slices need a color that reads on every slice's own fill).
+  function datalabelsFor(totalGetter, extra) {
+    return Object.assign({
+      formatter: (value, ctx) => chartValuePercentLabel(value, typeof totalGetter==="function" ? totalGetter(ctx) : totalGetter),
+      font: {weight:"600", size:11},
+      color: "#334155",
+      clamp: true,
+    }, extra||{});
+  }
+  // Grand total across every dataset in a Chart.js `data` object — shared by chart configs below
+  // instead of each one re-summing its own datasets inline.
+  const sumAllDatasets = data => data.datasets.reduce((sum,ds)=>sum+ds.data.reduce((a,b)=>a+(Number(b)||0),0), 0);
   const hasResponse = row => Boolean(clean(row.ClickDateTime) || clean(row.ResponseSafe) || clean(row.DrillResponse));
   // SharePoint Choice/Lookup/Person fields can come back as objects instead of plain strings.
   // fieldText() extracts readable text from those shapes so "empty" checks (Mode/iMsg) work correctly.
@@ -664,7 +696,7 @@
     };
     const statusLabels={safe:"Safe", pending:"Pending Employer", help:"Need help"};
     if(statusChart) statusChart.destroy();
-    statusChart=new Chart($("statusChart"),{type:"doughnut",data:{labels:["Safe","Pending Employer","Need help"],datasets:[{data:[safe,pending,help],backgroundColor:["#16845b","#C5A153","#d64545"],borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"bottom"}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
+    statusChart=new Chart($("statusChart"),{type:"doughnut",data:{labels:["Safe","Pending Employer","Need help"],datasets:[{data:[safe,pending,help],backgroundColor:["#16845b","#C5A153","#d64545"],borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"bottom"},datalabels:datalabelsFor(ctx=>sumAllDatasets(ctx.chart.data), {color:"#fff",anchor:"center",align:"center",font:{weight:"700",size:12}})},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
       if (!elements.length) return;
       const kinds=["safe","pending","help"];
       const kind=kinds[elements[0].index];
@@ -706,7 +738,7 @@
     const bucketLabels=[], bucketData=[];
     for (let b=0; b<=maxBucket; b+=15) { bucketLabels.push(`${b}–${b+15} นาที`); bucketData.push(bucketCounts[b]||0); }
     if(drillChart) drillChart.destroy();
-    drillChart=new Chart($("drillChart"),{type:"bar",data:{labels:bucketLabels,datasets:[{label:"จำนวนผู้ตอบ",data:bucketData,backgroundColor:"#202B49",borderRadius:4,maxBarThickness:56}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{title:items=>items[0].label,label:item=>`${item.parsed.y.toLocaleString('th-TH')} คน`}}},scales:{x:{title:{display:true,text:'นาทีหลังจาก Admin แจ้งเหตุ'},grid:{display:false}},y:{beginAtZero:true,ticks:{precision:0},title:{display:true,text:'จำนวนผู้ตอบ (คนไม่ซ้ำ)'}}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
+    drillChart=new Chart($("drillChart"),{type:"bar",data:{labels:bucketLabels,datasets:[{label:"จำนวนผู้ตอบ",data:bucketData,backgroundColor:"#202B49",borderRadius:4,maxBarThickness:56}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{title:items=>items[0].label,label:item=>`${item.parsed.y.toLocaleString('th-TH')} คน`}},datalabels:datalabelsFor(ctx=>sumAllDatasets(ctx.chart.data), {anchor:"end",align:"top"})},scales:{x:{title:{display:true,text:'นาทีหลังจาก Admin แจ้งเหตุ'},grid:{display:false}},y:{beginAtZero:true,ticks:{precision:0},title:{display:true,text:'จำนวนผู้ตอบ (คนไม่ซ้ำ)'}}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
       if (!elements.length) return;
       const bucketStart=elements[0].index*15;
       const key=`bucket:${bucketStart}`;
@@ -768,7 +800,7 @@
     missingChart=new Chart($("missingChart"),{type:"bar",data:{labels:deptLabels,datasets:[
       {label:"ตอบรับแล้ว",data:respondedData,backgroundColor:"#16845b",borderRadius:4,maxBarThickness:22},
       {label:"ยังไม่ตอบรับ",data:missingData,backgroundColor:"#202B49",borderRadius:4,maxBarThickness:22},
-    ]},options:{indexAxis:"y",responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"bottom"},tooltip:{callbacks:{label:item=>`${item.dataset.label}: ${item.parsed.x.toLocaleString('th-TH')} คน`}}},scales:{x:{beginAtZero:true,ticks:{precision:0}},y:{grid:{display:false}}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
+    ]},options:{indexAxis:"y",responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"bottom"},tooltip:{callbacks:{label:item=>`${item.dataset.label}: ${item.parsed.x.toLocaleString('th-TH')} คน`}},datalabels:datalabelsFor(ctx=>sumAllDatasets(ctx.chart.data), {anchor:"end",align:"end"})},scales:{x:{beginAtZero:true,ticks:{precision:0}},y:{grid:{display:false}}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
       if (!elements.length) return;
       // Both datasets share the same category (Department) labels, so any bar clicked in either
       // series resolves to the same Department via its category index — filters the table to
@@ -983,7 +1015,7 @@
     if(helpChart) helpChart.destroy();
     helpChart=new Chart($("helpDeptChart"),{type:"bar",data:{labels:deptLabels,datasets:[
       {label:"จำนวนคำขอความช่วยเหลือ (1 คนต่อ 1 ครั้งต่อ RefID)",data,backgroundColor:"#d64545",borderRadius:4,maxBarThickness:28},
-    ]},options:{indexAxis:"y",responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:item=>`${item.parsed.x.toLocaleString('th-TH')} คน`}}},scales:{x:{beginAtZero:true,ticks:{precision:0}},y:{grid:{display:false}}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
+    ]},options:{indexAxis:"y",responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:item=>`${item.parsed.x.toLocaleString('th-TH')} คน`}},datalabels:datalabelsFor(ctx=>sumAllDatasets(ctx.chart.data), {anchor:"end",align:"end"})},scales:{x:{beginAtZero:true,ticks:{precision:0}},y:{grid:{display:false}}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
       if (!elements.length) return;
       const dept=deptLabels[elements[0].index];
       helpDeptFilter=(helpDeptFilter===dept) ? null : dept;
@@ -1013,7 +1045,7 @@
     if(helpReasonChart) helpReasonChart.destroy();
     helpReasonChart=new Chart($("helpReasonChart"),{type:"bar",data:{labels,datasets:[
       {label:"จำนวนคำขอความช่วยเหลือ (1 คนต่อ 1 ครั้งต่อ RefID)",data,backgroundColor:["#d64545","#C5A153","#202B49","#8b8e91"],borderRadius:4,maxBarThickness:48},
-    ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:item=>`${item.parsed.y.toLocaleString('th-TH')} คน`}}},scales:{x:{grid:{display:false}},y:{beginAtZero:true,ticks:{precision:0}}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
+    ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:item=>`${item.parsed.y.toLocaleString('th-TH')} คน`}},datalabels:datalabelsFor(ctx=>sumAllDatasets(ctx.chart.data), {anchor:"end",align:"top"})},scales:{x:{grid:{display:false}},y:{beginAtZero:true,ticks:{precision:0}}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
       if (!elements.length) return;
       const reasonKey=reasonKeys[elements[0].index];
       helpReasonFilter=(helpReasonFilter===reasonKey) ? null : reasonKey;
@@ -1116,7 +1148,7 @@
     const correctCount=list.filter(p=>p.Correct).length;
     const wrongCount=list.length-correctCount;
     if(quizChart) quizChart.destroy();
-    quizChart=new Chart($("quizChart"),{type:"pie",data:{labels:["ตอบถูก","ตอบผิด"],datasets:[{data:[correctCount,wrongCount],backgroundColor:["#16845b","#d64545"],borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"bottom"},tooltip:{callbacks:{label:item=>`${item.label}: ${item.parsed.toLocaleString('th-TH')} คน`}}},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
+    quizChart=new Chart($("quizChart"),{type:"pie",data:{labels:["ตอบถูก","ตอบผิด"],datasets:[{data:[correctCount,wrongCount],backgroundColor:["#16845b","#d64545"],borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"bottom"},tooltip:{callbacks:{label:item=>`${item.label}: ${item.parsed.toLocaleString('th-TH')} คน`}},datalabels:datalabelsFor(ctx=>sumAllDatasets(ctx.chart.data), {color:"#fff",anchor:"center",align:"center",font:{weight:"700",size:12}})},onHover:(evt,elements)=>{ if(evt.native) evt.native.target.style.cursor=elements.length?"pointer":"default"; },onClick:(evt,elements)=>{
       if (!elements.length) return;
       const kind=elements[0].index===0 ? "correct" : "wrong";
       quizCorrectFilter=(quizCorrectFilter===kind) ? null : kind;
