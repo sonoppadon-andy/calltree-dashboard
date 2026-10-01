@@ -1375,12 +1375,48 @@
       fallback.style.display="flex";
     }, {once:true});
   }
+  // Real root cause of the "hash_empty_error" Safari screenshot (added 2026-10-01, replaces the
+  // earlier storeAuthStateInCookie guess — that one is left in place as it's harmless, but was
+  // NOT the actual bug): redirectUri points at this SAME index.html/app.js, so when MSAL's popup
+  // navigates back here after login, this script runs AGAIN inside the popup window and — before
+  // this fix — tried to bootstrap a second, independent PublicClientApplication right there. That
+  // second instance has no record of the login request (it lives in a separate app lifecycle from
+  // the one that started the login in the opener tab) and MSAL's safety logic strips the URL hash
+  // it doesn't recognize, which is exactly the one the OPENER window's MSAL is still waiting to
+  // read off the popup's URL — so the opener sees an empty hash and throws hash_empty_error. This
+  // is MSAL's own documented cause/fix for hash_empty_error ("the page used as redirectUri must not
+  // navigate/re-bootstrap before MSAL reads the hash" —
+  // https://learn.microsoft.com/en-us/entra/msal/javascript/browser/errors#hash-empty-error) and
+  // matches verified msal-browser 3.30.0 source (utils/BrowserUtils: isInPopup() tests exactly
+  // `window.opener && window.opener !== window && window.name starts with "msal."` — MSAL sets
+  // that window.name itself when it opens the popup via loginPopup/acquireTokenPopup, before this
+  // page's own script runs, so checking it here is reliable regardless of which browser or timing
+  // happens to race).
+  function isMsalPopup() {
+    return Boolean(window.opener) && window.opener !== window && typeof window.name === "string" && window.name.indexOf("msal.") === 0;
+  }
   async function init() {
+    // Skip the entire app bootstrap when this page loaded INSIDE an MSAL popup — don't create a
+    // second PublicClientApplication, don't touch the DOM beyond this. Let the opener window's own
+    // MSAL instance (the one that actually called loginPopup()) read the response off this popup's
+    // URL and close it, undisturbed. The popup shows a brief blank page for a moment — that's
+    // normal and expected, not a bug; it closes itself within a fraction of a second.
+    if (isMsalPopup()) return;
     initBrandLogo();
     if (!validateConfig()) return;
     try {
       if (typeof msal === "undefined") throw new Error("ไม่สามารถโหลดไลบรารี Microsoft Sign-in (MSAL) ได้ กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต, Proxy/Firewall ขององค์กร หรือ Ad-blocker ที่อาจบล็อก alcdn.msauth.net แล้วรีเฟรชหน้าใหม่");
-      msalApp=new msal.PublicClientApplication({auth:{clientId:cfg.clientId,authority:`https://login.microsoftonline.com/${cfg.tenantId}`,redirectUri:cfg.redirectUri,postLogoutRedirectUri:cfg.redirectUri,navigateToLoginRequestUrl:false},cache:{cacheLocation:"sessionStorage"}});
+      // storeAuthStateInCookie (added 2026-10-01, reported Safari white-screen hang on
+      // loginPopup — works fine on Chrome): MSAL's own docs tie this flag specifically to old
+      // IE11/Edge, not officially to Safari, so this is a low-risk trial mitigation, not a
+      // confirmed fix — see claude/calltree-dashboard-notes.md for the full diagnosis and what
+      // still needs the user's own testing to confirm. It stores MSAL's short-lived auth-flow
+      // request state (the nonce/state used to validate the popup's redirect back) in a cookie
+      // as a fallback alongside sessionStorage — cookies survive Safari's storage partitioning
+      // during the popup round-trip to login.microsoftonline.com in cases sessionStorage alone
+      // does not, which can otherwise leave MSAL waiting forever for a state it can no longer
+      // find (matching the "opens popup, stays blank/white, never resolves or errors" symptom).
+      msalApp=new msal.PublicClientApplication({auth:{clientId:cfg.clientId,authority:`https://login.microsoftonline.com/${cfg.tenantId}`,redirectUri:cfg.redirectUri,postLogoutRedirectUri:cfg.redirectUri,navigateToLoginRequestUrl:false},cache:{cacheLocation:"sessionStorage",storeAuthStateInCookie:true}});
       await msalApp.initialize();
       $("configMessage").textContent="";
       $("loginButton").disabled=false;
