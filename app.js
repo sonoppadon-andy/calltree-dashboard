@@ -262,7 +262,15 @@
     const account = msalApp.getActiveAccount() || msalApp.getAllAccounts()[0];
     if (!account) throw new Error("ไม่พบบัญชีที่เข้าสู่ระบบ");
     try { return (await msalApp.acquireTokenSilent({account, scopes:cfg.graphScopes})).accessToken; }
-    catch { return (await msalApp.acquireTokenPopup({account, scopes:cfg.graphScopes})).accessToken; }
+    catch {
+      // Safari/Mobile (added 2026-10-01, see isSafariMobile() below): acquireTokenRedirect()
+      // navigates the whole page away to login.microsoftonline.com — it does NOT resolve with a
+      // token here. Returning null tells loadData() to stop quietly instead of calling the Graph
+      // API with no token; the real token comes back on the NEXT page load, read off the URL by
+      // init()'s handleRedirectPromise() call, which re-runs loadData() itself once it has one.
+      if (isSafariMobile()) { await msalApp.acquireTokenRedirect({account, scopes:cfg.graphScopes}); return null; }
+      return (await msalApp.acquireTokenPopup({account, scopes:cfg.graphScopes})).accessToken;
+    }
   }
   async function readSharePointList(token) {
     const site = await graphGet(`/sites/${cfg.sharePointHost}:${cfg.sitePath}?$select=id,displayName`, token);
@@ -1336,6 +1344,11 @@
     show("loading",true); show("content",false); setMessage("");
     try {
       const token=await acquireToken();
+      // Safari/Mobile mid-session token refresh (added 2026-10-01): acquireToken() returns null
+      // when it just kicked off acquireTokenRedirect() instead of a popup — the page is already
+      // navigating away to sign-in, so stop here quietly rather than calling the Graph API with
+      // no token. Nothing more to show the user; the page is about to leave anyway.
+      if (!token) return;
       allRows=await readSharePointList(token);
       // Phone Book (Master List) is a separate SharePoint site/list from Member — load it in its
       // own try/catch so a problem there (e.g. no access to /sites/snet, or the list/columns
@@ -1355,9 +1368,36 @@
     catch(error){ console.error(error); setMessage(error.message || "ไม่สามารถโหลดข้อมูลได้", "error"); }
     finally { show("loading",false); }
   }
+  // Safari/Mobile detection (added 2026-10-01, scope confirmed explicitly by the user as "เฉพาะ
+  // Safari/Mobile" — NOT a universal change — after the hash_empty_error fix above did not
+  // resolve the issue: the popup still goes blank/white on first click, and a stuck
+  // interaction_in_progress flag then blocks every retry). The user independently confirmed
+  // Chrome for iOS on the SAME physical iPhone works fine with the existing popup flow, while
+  // Safari on that same device does not — so this is NOT a blanket "iOS can't do popups" issue
+  // (Chrome-iOS/Firefox-iOS/Edge-iOS are Chromium/Gecko engines inside Apple's required WKWebView
+  // wrapper, not Safari itself, and must be explicitly EXCLUDED here via their own UA markers
+  // CriOS/FxiOS/EdgiOS/OPiOS) — it points at something specific to Safari's own popup/window.open
+  // handling on a touch/mobile form factor. Only a match here switches to the full-page
+  // loginRedirect()/acquireTokenRedirect() flow below; every other browser (incl. Chrome Desktop,
+  // which already works) keeps the existing loginPopup()/acquireTokenPopup() flow untouched.
+  function isSafariMobile() {
+    const ua = navigator.userAgent;
+    const isSafariEngine = /Safari/.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS|Chrome|Chromium|Android/.test(ua);
+    const isMobile = /iPhone|iPad|iPod/.test(ua) || (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform || ""));
+    return isSafariEngine && isMobile;
+  }
   async function login() {
     if (!msalApp) { $("configMessage").textContent="ระบบยังไม่พร้อมเข้าสู่ระบบ (MSAL ยังไม่ถูกโหลด) กรุณารีเฟรชหน้านี้ หากยังไม่หาย ให้ตรวจสอบว่าเครือข่าย/Proxy บล็อก alcdn.msauth.net หรือไม่"; return; }
-    try { const result=await msalApp.loginPopup({scopes:cfg.graphScopes,prompt:"select_account"}); msalApp.setActiveAccount(result.account); show("loginView",false); show("dashboardView",true); await loadData(); }
+    try {
+      if (isSafariMobile()) {
+        // Full-page redirect — the browser navigates away right here; nothing after this line in
+        // this call runs. The return trip is handled by init()'s handleRedirectPromise() call
+        // on the next page load (see below), which itself calls loadData() on success.
+        await msalApp.loginRedirect({scopes:cfg.graphScopes,prompt:"select_account"});
+        return;
+      }
+      const result=await msalApp.loginPopup({scopes:cfg.graphScopes,prompt:"select_account"}); msalApp.setActiveAccount(result.account); show("loginView",false); show("dashboardView",true); await loadData();
+    }
     catch(error){ console.error(error); $("configMessage").textContent=error.message || "เข้าสู่ระบบไม่สำเร็จ"; }
   }
   // Singha Estate CI branding (added 2026-09-27): the login page's brand-mark shows the company
@@ -1418,8 +1458,22 @@
       // find (matching the "opens popup, stays blank/white, never resolves or errors" symptom).
       msalApp=new msal.PublicClientApplication({auth:{clientId:cfg.clientId,authority:`https://login.microsoftonline.com/${cfg.tenantId}`,redirectUri:cfg.redirectUri,postLogoutRedirectUri:cfg.redirectUri,navigateToLoginRequestUrl:false},cache:{cacheLocation:"sessionStorage",storeAuthStateInCookie:true}});
       await msalApp.initialize();
+      // Safari/Mobile redirect-flow return trip (added 2026-10-01): loginRedirect()/
+      // acquireTokenRedirect() (see isSafariMobile()/login()/acquireToken() above) navigate the
+      // WHOLE page away to login.microsoftonline.com and back — there is no separate popup window
+      // to catch the response, so THIS load of app.js is the one that must read it off the URL.
+      // handleRedirectPromise() is MSAL's own documented call for exactly this; per MSAL's own
+      // pattern it must be awaited on every init() (not only when isSafariMobile() matches) — on
+      // any ordinary page load that is NOT a redirect return trip it simply resolves to null, so
+      // it is always safe to call here before checking getAllAccounts().
+      const redirectResult = await msalApp.handleRedirectPromise();
       $("configMessage").textContent="";
       $("loginButton").disabled=false;
+      if (redirectResult && redirectResult.account) {
+        msalApp.setActiveAccount(redirectResult.account);
+        show("loginView",false); show("dashboardView",true); await loadData();
+        return;
+      }
       const accounts=msalApp.getAllAccounts();
       if(accounts.length){msalApp.setActiveAccount(accounts[0]);show("loginView",false);show("dashboardView",true);await loadData();}
     } catch(error) {
