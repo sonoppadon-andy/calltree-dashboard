@@ -644,6 +644,27 @@
       ID:`PB-${p.Email}`, RefID:"", EMail:p.Email, Created:null, ResponseSafe:"", HelpNote:"", DrillResponse:"",
     }));
     const help=dashRows.filter(r=>clean(r.HelpNote) || clean(r.ResponseSafe).toLowerCase()==="seehelpnote").length;
+    // KPI card "ผู้ที่ขอความช่วยเหลือ" (added 2026-10-02, placed right after Total Records) — per
+    // the user's explicit choice when asked (2 counting bases already existed in this file and
+    // disagreed: `help` above is ROW-based/undeduped — same as the doughnut's "Need help" slice —
+    // while the "รายงานขอความช่วยเหลือ" tab's own KPI dedupes to one request per (RefID, Email)).
+    // The user chose the SECOND basis for this card: "นับจำนวนคนไม่ซ้ำ (1 คนต่อ 1 ครั้งต่อ RefID)
+    // — เหมือน KPI ในแท็บ รายงานขอความช่วยเหลือ". This mirrors the exact same (RefID, Email) dedup
+    // key as `helpUniqueByRefEmail` below (currentHelpRows/currentHelpUniqueRows) — see that
+    // block's comment — but is scoped to `dashRows` instead of the unfiltered `rows`, so this card
+    // reacts to the Dashboard's own filter bar (BU/Department/ตอบ-ไม่ตอบ/Type/15-minute bucket)
+    // exactly like every other KPI card in this row. Intentionally a SEPARATE computation from
+    // `currentHelpUniqueRows` (that one is global/unfiltered, feeding the Help Report tab's own
+    // charts) — do not merge them, their filter scopes differ on purpose.
+    const helpUniqueKeys=new Set();
+    dashRows.forEach(r=>{
+      const isHelpRow=Boolean(clean(r.HelpNote) || clean(r.ResponseSafe).toLowerCase()==="seehelpnote");
+      if (!isHelpRow) return;
+      const email=emailOf(r);
+      if (!email) return;
+      helpUniqueKeys.add((clean(r.RefID)||"Unknown")+"|"+email.toLowerCase());
+    });
+    const helpUnique=helpUniqueKeys.size;
     // "% ผู้ที่ตอบผิด": compare each RefID's Admin announcement text (iMsg) against each member's
     // Drill Response, within the dash-filtered scope (dashRows). Counted per UNIQUE email — if a
     // person answered more than once, only their FIRST Drill Response (by earliest Created,
@@ -669,6 +690,7 @@
     // "Total Records" shows the (dash-filtered) Phone Book master headcount — "–" (not "0") if
     // Phone Book hasn't loaded, same reasoning as kpiMissing above.
     $("kpiTotal").textContent=phoneBookEmails.length ? dashPhoneBookEmails.length.toLocaleString("th-TH") : "–";
+    $("kpiHelp").textContent=helpUnique.toLocaleString("th-TH");
     $("kpiSafe").textContent=safe.toLocaleString("th-TH");
     $("kpiResponded").textContent=responded.toLocaleString("th-TH");
     $("kpiPending").textContent=pending.toLocaleString("th-TH");
